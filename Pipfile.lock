@@ -672,7 +672,9 @@
         "ocrmypdf": {
             "hashes": [
                 "sha256:7f0a6165b80ba1b37ce5943cf5b4faf93bf98c04c8f5157ef83c5f292491485f",
-                "sha256:d52410bc38cf5b66da27668e38c66ac41fd3136457c1ec388b311f0a78ee213c"
+                "sha256:bb770ef09439112c4fd84b7cca7f53da88f10927eda8c24ab0e9ae1c1626d018",
+                "sha256:d52410bc38cf5b66da27668e38c66ac41fd3136457c1ec388b311f0a78ee213c",
+                "sha256:e5a882afe9e1eb5382c916f13649dcab03035546f34d4bf1487d561081cb662c"
             ],
             "index": "pypi",
             "version": "==13.4.0"
@@ -1592,9 +1594,7 @@
             "version": "==8.1.2"
         },
         "coverage": {
-            "extras": [
-                "toml"
-            ],
+            "extras": [],
             "hashes": [
                 "sha256:03e2a7826086b91ef345ff18742ee9fc47a6839ccd517061ef8fa1976e652ce9",
                 "sha256:07e6db90cd9686c767dcc593dff16c8c09f9814f5e9c51034066cad3373b914d",
