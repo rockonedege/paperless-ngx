@@ -1,9 +1,17 @@
 ::ng-deep .popover {
-    max-width: 50%;
+    max-width: 350px;
+
+    pre {
+        white-space: pre-wrap;
+    }
 }
 
-::ng-deep .popover.mobile {
-    max-width: 75%;
+pre {
+    white-space: pre-wrap;
+}
+
+.result {
+    cursor: pointer;
 }
 
 .btn .spinner-border-sm {
