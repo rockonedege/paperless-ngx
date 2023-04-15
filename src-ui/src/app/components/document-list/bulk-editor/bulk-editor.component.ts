@@ -1,4 +1,4 @@
-import { Component } from '@angular/core'
+import { Component, OnDestroy, OnInit } from '@angular/core'
 import { PaperlessTag } from 'src/app/data/paperless-tag'
 import { PaperlessCorrespondent } from 'src/app/data/paperless-correspondent'
 import { PaperlessDocumentType } from 'src/app/data/paperless-document-type'
@@ -19,27 +19,39 @@ import {
 } from '../../common/filterable-dropdown/filterable-dropdown.component'
 import { ToggleableItemState } from '../../common/filterable-dropdown/toggleable-dropdown-button/toggleable-dropdown-button.component'
 import { MatchingModel } from 'src/app/data/matching-model'
-import {
-  SettingsService,
-  SETTINGS_KEYS,
-} from 'src/app/services/settings.service'
+import { SettingsService } from 'src/app/services/settings.service'
 import { ToastService } from 'src/app/services/toast.service'
 import { saveAs } from 'file-saver'
+import { StoragePathService } from 'src/app/services/rest/storage-path.service'
+import { PaperlessStoragePath } from 'src/app/data/paperless-storage-path'
+import { SETTINGS_KEYS } from 'src/app/data/paperless-uisettings'
+import { FormControl, FormGroup } from '@angular/forms'
+import { first, Subject, takeUntil } from 'rxjs'
 
 @Component({
   selector: 'app-bulk-editor',
   templateUrl: './bulk-editor.component.html',
   styleUrls: ['./bulk-editor.component.scss'],
 })
-export class BulkEditorComponent {
+export class BulkEditorComponent implements OnInit, OnDestroy {
   tags: PaperlessTag[]
   correspondents: PaperlessCorrespondent[]
   documentTypes: PaperlessDocumentType[]
+  storagePaths: PaperlessStoragePath[]
 
   tagSelectionModel = new FilterableDropdownSelectionModel()
   correspondentSelectionModel = new FilterableDropdownSelectionModel()
   documentTypeSelectionModel = new FilterableDropdownSelectionModel()
+  storagePathsSelectionModel = new FilterableDropdownSelectionModel()
   awaitingDownload: boolean
+
+  unsubscribeNotifier: Subject<any> = new Subject()
+
+  downloadForm = new FormGroup({
+    downloadFileTypeArchive: new FormControl(true),
+    downloadFileTypeOriginals: new FormControl(false),
+    downloadUseFormatting: new FormControl(false),
+  })
 
   constructor(
     private documentTypeService: DocumentTypeService,
@@ -50,7 +62,8 @@ export class BulkEditorComponent {
     private modalService: NgbModal,
     private openDocumentService: OpenDocumentsService,
     private settings: SettingsService,
-    private toastService: ToastService
+    private toastService: ToastService,
+    private storagePathService: StoragePathService
   ) {}
 
   applyOnClose: boolean = this.settings.get(
@@ -63,13 +76,46 @@ export class BulkEditorComponent {
   ngOnInit() {
     this.tagService
       .listAll()
+      .pipe(first())
       .subscribe((result) => (this.tags = result.results))
     this.correspondentService
       .listAll()
+      .pipe(first())
       .subscribe((result) => (this.correspondents = result.results))
     this.documentTypeService
       .listAll()
+      .pipe(first())
       .subscribe((result) => (this.documentTypes = result.results))
+    this.storagePathService
+      .listAll()
+      .pipe(first())
+      .subscribe((result) => (this.storagePaths = result.results))
+
+    this.downloadForm
+      .get('downloadFileTypeArchive')
+      .valueChanges.pipe(takeUntil(this.unsubscribeNotifier))
+      .subscribe((newValue) => {
+        if (!newValue) {
+          this.downloadForm
+            .get('downloadFileTypeOriginals')
+            .patchValue(true, { emitEvent: false })
+        }
+      })
+    this.downloadForm
+      .get('downloadFileTypeOriginals')
+      .valueChanges.pipe(takeUntil(this.unsubscribeNotifier))
+      .subscribe((newValue) => {
+        if (!newValue) {
+          this.downloadForm
+            .get('downloadFileTypeArchive')
+            .patchValue(true, { emitEvent: false })
+        }
+      })
+  }
+
+  ngOnDestroy(): void {
+    this.unsubscribeNotifier.next(this)
+    this.unsubscribeNotifier.complete()
   }
 
   private executeBulkOperation(modal, method: string, args) {
@@ -78,8 +124,9 @@ export class BulkEditorComponent {
     }
     this.documentService
       .bulkEdit(Array.from(this.list.selected), method, args)
-      .subscribe(
-        (response) => {
+      .pipe(first())
+      .subscribe({
+        next: () => {
           this.list.reload()
           this.list.reduceSelectionToFilter()
           this.list.selected.forEach((id) => {
@@ -89,7 +136,7 @@ export class BulkEditorComponent {
             modal.close()
           }
         },
-        (error) => {
+        error: (error) => {
           if (modal) {
             modal.componentInstance.buttonsEnabled = true
           }
@@ -98,8 +145,8 @@ export class BulkEditorComponent {
               error.error
             )}`
           )
-        }
-      )
+        },
+      })
   }
 
   private applySelectionData(
@@ -120,6 +167,7 @@ export class BulkEditorComponent {
   openTagsDropdown() {
     this.documentService
       .getSelectionData(Array.from(this.list.selected))
+      .pipe(first())
       .subscribe((s) => {
         this.applySelectionData(s.selected_tags, this.tagSelectionModel)
       })
@@ -128,6 +176,7 @@ export class BulkEditorComponent {
   openDocumentTypeDropdown() {
     this.documentService
       .getSelectionData(Array.from(this.list.selected))
+      .pipe(first())
       .subscribe((s) => {
         this.applySelectionData(
           s.selected_document_types,
@@ -139,10 +188,23 @@ export class BulkEditorComponent {
   openCorrespondentDropdown() {
     this.documentService
       .getSelectionData(Array.from(this.list.selected))
+      .pipe(first())
       .subscribe((s) => {
         this.applySelectionData(
           s.selected_correspondents,
           this.correspondentSelectionModel
+        )
+      })
+  }
+
+  openStoragePathDropdown() {
+    this.documentService
+      .getSelectionData(Array.from(this.list.selected))
+      .pipe(first())
+      .subscribe((s) => {
+        this.applySelectionData(
+          s.selected_storage_paths,
+          this.storagePathsSelectionModel
         )
       })
   }
@@ -215,12 +277,14 @@ export class BulkEditorComponent {
 
       modal.componentInstance.btnClass = 'btn-warning'
       modal.componentInstance.btnCaption = $localize`Confirm`
-      modal.componentInstance.confirmClicked.subscribe(() => {
-        this.executeBulkOperation(modal, 'modify_tags', {
-          add_tags: changedTags.itemsToAdd.map((t) => t.id),
-          remove_tags: changedTags.itemsToRemove.map((t) => t.id),
+      modal.componentInstance.confirmClicked
+        .pipe(takeUntil(this.unsubscribeNotifier))
+        .subscribe(() => {
+          this.executeBulkOperation(modal, 'modify_tags', {
+            add_tags: changedTags.itemsToAdd.map((t) => t.id),
+            remove_tags: changedTags.itemsToRemove.map((t) => t.id),
+          })
         })
-      })
     } else {
       this.executeBulkOperation(null, 'modify_tags', {
         add_tags: changedTags.itemsToAdd.map((t) => t.id),
@@ -253,11 +317,13 @@ export class BulkEditorComponent {
       }
       modal.componentInstance.btnClass = 'btn-warning'
       modal.componentInstance.btnCaption = $localize`Confirm`
-      modal.componentInstance.confirmClicked.subscribe(() => {
-        this.executeBulkOperation(modal, 'set_correspondent', {
-          correspondent: correspondent ? correspondent.id : null,
+      modal.componentInstance.confirmClicked
+        .pipe(takeUntil(this.unsubscribeNotifier))
+        .subscribe(() => {
+          this.executeBulkOperation(modal, 'set_correspondent', {
+            correspondent: correspondent ? correspondent.id : null,
+          })
         })
-      })
     } else {
       this.executeBulkOperation(null, 'set_correspondent', {
         correspondent: correspondent ? correspondent.id : null,
@@ -289,14 +355,54 @@ export class BulkEditorComponent {
       }
       modal.componentInstance.btnClass = 'btn-warning'
       modal.componentInstance.btnCaption = $localize`Confirm`
-      modal.componentInstance.confirmClicked.subscribe(() => {
-        this.executeBulkOperation(modal, 'set_document_type', {
-          document_type: documentType ? documentType.id : null,
+      modal.componentInstance.confirmClicked
+        .pipe(takeUntil(this.unsubscribeNotifier))
+        .subscribe(() => {
+          this.executeBulkOperation(modal, 'set_document_type', {
+            document_type: documentType ? documentType.id : null,
+          })
         })
-      })
     } else {
       this.executeBulkOperation(null, 'set_document_type', {
         document_type: documentType ? documentType.id : null,
+      })
+    }
+  }
+
+  setStoragePaths(changedDocumentPaths: ChangedItems) {
+    if (
+      changedDocumentPaths.itemsToAdd.length == 0 &&
+      changedDocumentPaths.itemsToRemove.length == 0
+    )
+      return
+
+    let storagePath =
+      changedDocumentPaths.itemsToAdd.length > 0
+        ? changedDocumentPaths.itemsToAdd[0]
+        : null
+
+    if (this.showConfirmationDialogs) {
+      let modal = this.modalService.open(ConfirmDialogComponent, {
+        backdrop: 'static',
+      })
+      modal.componentInstance.title = $localize`Confirm storage path assignment`
+      if (storagePath) {
+        modal.componentInstance.message = $localize`This operation will assign the storage path "${storagePath.name}" to ${this.list.selected.size} selected document(s).`
+      } else {
+        modal.componentInstance.message = $localize`This operation will remove the storage path from ${this.list.selected.size} selected document(s).`
+      }
+      modal.componentInstance.btnClass = 'btn-warning'
+      modal.componentInstance.btnCaption = $localize`Confirm`
+      modal.componentInstance.confirmClicked
+        .pipe(takeUntil(this.unsubscribeNotifier))
+        .subscribe(() => {
+          this.executeBulkOperation(modal, 'set_storage_path', {
+            storage_path: storagePath ? storagePath.id : null,
+          })
+        })
+    } else {
+      this.executeBulkOperation(null, 'set_storage_path', {
+        storage_path: storagePath ? storagePath.id : null,
       })
     }
   }
@@ -311,19 +417,50 @@ export class BulkEditorComponent {
     modal.componentInstance.message = $localize`This operation cannot be undone.`
     modal.componentInstance.btnClass = 'btn-danger'
     modal.componentInstance.btnCaption = $localize`Delete document(s)`
-    modal.componentInstance.confirmClicked.subscribe(() => {
-      modal.componentInstance.buttonsEnabled = false
-      this.executeBulkOperation(modal, 'delete', {})
-    })
+    modal.componentInstance.confirmClicked
+      .pipe(takeUntil(this.unsubscribeNotifier))
+      .subscribe(() => {
+        modal.componentInstance.buttonsEnabled = false
+        this.executeBulkOperation(modal, 'delete', {})
+      })
   }
 
-  downloadSelected(content = 'archive') {
+  downloadSelected() {
     this.awaitingDownload = true
+    let downloadFileType: string =
+      this.downloadForm.get('downloadFileTypeArchive').value &&
+      this.downloadForm.get('downloadFileTypeOriginals').value
+        ? 'both'
+        : this.downloadForm.get('downloadFileTypeArchive').value
+        ? 'archive'
+        : 'originals'
     this.documentService
-      .bulkDownload(Array.from(this.list.selected), content)
+      .bulkDownload(
+        Array.from(this.list.selected),
+        downloadFileType,
+        this.downloadForm.get('downloadUseFormatting').value
+      )
+      .pipe(first())
       .subscribe((result: any) => {
         saveAs(result, 'documents.zip')
         this.awaitingDownload = false
+      })
+  }
+
+  redoOcrSelected() {
+    let modal = this.modalService.open(ConfirmDialogComponent, {
+      backdrop: 'static',
+    })
+    modal.componentInstance.title = $localize`Redo OCR confirm`
+    modal.componentInstance.messageBold = $localize`This operation will permanently redo OCR for ${this.list.selected.size} selected document(s).`
+    modal.componentInstance.message = $localize`This operation cannot be undone.`
+    modal.componentInstance.btnClass = 'btn-danger'
+    modal.componentInstance.btnCaption = $localize`Proceed`
+    modal.componentInstance.confirmClicked
+      .pipe(takeUntil(this.unsubscribeNotifier))
+      .subscribe(() => {
+        modal.componentInstance.buttonsEnabled = false
+        this.executeBulkOperation(modal, 'redo_ocr', {})
       })
   }
 }

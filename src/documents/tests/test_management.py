@@ -10,15 +10,15 @@ from django.core.management import call_command
 from django.test import override_settings
 from django.test import TestCase
 from documents.file_handling import generate_filename
-from documents.management.commands.document_archiver import handle_document
 from documents.models import Document
+from documents.tasks import update_document_archive_file
 from documents.tests.utils import DirectoriesMixin
 
 
 sample_file = os.path.join(os.path.dirname(__file__), "samples", "simple.pdf")
 
 
-@override_settings(PAPERLESS_FILENAME_FORMAT="{correspondent}/{title}")
+@override_settings(FILENAME_FORMAT="{correspondent}/{title}")
 class TestArchiver(DirectoriesMixin, TestCase):
     def make_models(self):
         return Document.objects.create(
@@ -46,7 +46,7 @@ class TestArchiver(DirectoriesMixin, TestCase):
             os.path.join(self.dirs.originals_dir, f"{doc.id:07}.pdf"),
         )
 
-        handle_document(doc.pk)
+        update_document_archive_file(doc.pk)
 
         doc = Document.objects.get(id=doc.id)
 
@@ -63,7 +63,7 @@ class TestArchiver(DirectoriesMixin, TestCase):
         doc.save()
         shutil.copy(sample_file, doc.source_path)
 
-        handle_document(doc.pk)
+        update_document_archive_file(doc.pk)
 
         doc = Document.objects.get(id=doc.id)
 
@@ -72,7 +72,7 @@ class TestArchiver(DirectoriesMixin, TestCase):
         self.assertIsNone(doc.archive_filename)
         self.assertTrue(os.path.isfile(doc.source_path))
 
-    @override_settings(PAPERLESS_FILENAME_FORMAT="{title}")
+    @override_settings(FILENAME_FORMAT="{title}")
     def test_naming_priorities(self):
         doc1 = Document.objects.create(
             checksum="A",
@@ -88,14 +88,14 @@ class TestArchiver(DirectoriesMixin, TestCase):
             mime_type="application/pdf",
             filename="document_01.pdf",
         )
-        shutil.copy(sample_file, os.path.join(self.dirs.originals_dir, f"document.pdf"))
+        shutil.copy(sample_file, os.path.join(self.dirs.originals_dir, "document.pdf"))
         shutil.copy(
             sample_file,
-            os.path.join(self.dirs.originals_dir, f"document_01.pdf"),
+            os.path.join(self.dirs.originals_dir, "document_01.pdf"),
         )
 
-        handle_document(doc2.pk)
-        handle_document(doc1.pk)
+        update_document_archive_file(doc2.pk)
+        update_document_archive_file(doc1.pk)
 
         doc1 = Document.objects.get(id=doc1.id)
         doc2 = Document.objects.get(id=doc2.id)
@@ -109,7 +109,7 @@ class TestDecryptDocuments(TestCase):
         ORIGINALS_DIR=os.path.join(os.path.dirname(__file__), "samples", "originals"),
         THUMBNAIL_DIR=os.path.join(os.path.dirname(__file__), "samples", "thumb"),
         PASSPHRASE="test",
-        PAPERLESS_FILENAME_FORMAT=None,
+        FILENAME_FORMAT=None,
     )
     @mock.patch("documents.management.commands.decrypt_documents.input")
     def test_decrypt(self, m):
@@ -150,9 +150,9 @@ class TestDecryptDocuments(TestCase):
                 "samples",
                 "documents",
                 "thumbnails",
-                f"0000004.png.gpg",
+                "0000004.webp.gpg",
             ),
-            os.path.join(thumb_dir, f"{doc.id:07}.png.gpg"),
+            os.path.join(thumb_dir, f"{doc.id:07}.webp.gpg"),
         )
 
         call_command("decrypt_documents")
@@ -163,7 +163,7 @@ class TestDecryptDocuments(TestCase):
         self.assertEqual(doc.filename, "0000004.pdf")
         self.assertTrue(os.path.isfile(os.path.join(originals_dir, "0000004.pdf")))
         self.assertTrue(os.path.isfile(doc.source_path))
-        self.assertTrue(os.path.isfile(os.path.join(thumb_dir, f"{doc.id:07}.png")))
+        self.assertTrue(os.path.isfile(os.path.join(thumb_dir, f"{doc.id:07}.webp")))
         self.assertTrue(os.path.isfile(doc.thumbnail_path))
 
         with doc.source_file as f:
@@ -184,7 +184,7 @@ class TestMakeIndex(TestCase):
 
 
 class TestRenamer(DirectoriesMixin, TestCase):
-    @override_settings(PAPERLESS_FILENAME_FORMAT="")
+    @override_settings(FILENAME_FORMAT="")
     def test_rename(self):
         doc = Document.objects.create(title="test", mime_type="image/jpeg")
         doc.filename = generate_filename(doc)
@@ -194,7 +194,7 @@ class TestRenamer(DirectoriesMixin, TestCase):
         Path(doc.source_path).touch()
         Path(doc.archive_path).touch()
 
-        with override_settings(PAPERLESS_FILENAME_FORMAT="{correspondent}/{title}"):
+        with override_settings(FILENAME_FORMAT="{correspondent}/{title}"):
             call_command("document_renamer")
 
         doc2 = Document.objects.get(id=doc.id)
@@ -238,5 +238,5 @@ class TestSanityChecker(DirectoriesMixin, TestCase):
         with self.assertLogs() as capture:
             call_command("document_sanity_checker")
 
-        self.assertEqual(len(capture.output), 1)
-        self.assertIn("Checksum mismatch of document", capture.output[0])
+        self.assertEqual(len(capture.output), 2)
+        self.assertIn("Checksum mismatch. Stored: abc, actual:", capture.output[1])

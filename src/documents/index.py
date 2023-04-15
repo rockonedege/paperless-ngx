@@ -5,6 +5,8 @@ from contextlib import contextmanager
 
 from dateutil.parser import isoparse
 from django.conf import settings
+from django.utils import timezone
+from documents.models import Comment
 from documents.models import Document
 from whoosh import classify
 from whoosh import highlight
@@ -33,7 +35,7 @@ def get_schema():
         id=NUMERIC(stored=True, unique=True),
         title=TEXT(sortable=True),
         content=TEXT(),
-        asn=NUMERIC(sortable=True),
+        asn=NUMERIC(sortable=True, signed=False),
         correspondent=TEXT(sortable=True),
         correspondent_id=NUMERIC(),
         has_correspondent=BOOLEAN(),
@@ -46,6 +48,10 @@ def get_schema():
         created=DATETIME(sortable=True),
         modified=DATETIME(sortable=True),
         added=DATETIME(sortable=True),
+        path=TEXT(sortable=True),
+        path_id=NUMERIC(),
+        has_path=BOOLEAN(),
+        comments=TEXT(),
     )
 
 
@@ -84,9 +90,22 @@ def open_index_searcher():
         searcher.close()
 
 
-def update_document(writer, doc):
+def update_document(writer: AsyncWriter, doc: Document):
     tags = ",".join([t.name for t in doc.tags.all()])
     tags_ids = ",".join([str(t.id) for t in doc.tags.all()])
+    comments = ",".join([str(c.comment) for c in Comment.objects.filter(document=doc)])
+    asn = doc.archive_serial_number
+    if asn is not None and (
+        asn < Document.ARCHIVE_SERIAL_NUMBER_MIN
+        or asn > Document.ARCHIVE_SERIAL_NUMBER_MAX
+    ):
+        logger.error(
+            f"Not indexing Archive Serial Number {asn} of document {doc.pk}. "
+            f"ASN is out of range "
+            f"[{Document.ARCHIVE_SERIAL_NUMBER_MIN:,}, "
+            f"{Document.ARCHIVE_SERIAL_NUMBER_MAX:,}.",
+        )
+        asn = 0
     writer.update_document(
         id=doc.pk,
         title=doc.title,
@@ -102,8 +121,12 @@ def update_document(writer, doc):
         has_type=doc.document_type is not None,
         created=doc.created,
         added=doc.added,
-        asn=doc.archive_serial_number,
+        asn=asn,
         modified=doc.modified,
+        path=doc.storage_path.name if doc.storage_path else None,
+        path_id=doc.storage_path.id if doc.storage_path else None,
+        has_path=doc.storage_path is not None,
+        comments=comments,
     )
 
 
@@ -137,6 +160,9 @@ class DelayedQuery:
             elif k == "tags__id__all":
                 for tag_id in v.split(","):
                     criterias.append(query.Term("tag_id", tag_id))
+            elif k == "tags__id__none":
+                for tag_id in v.split(","):
+                    criterias.append(query.Not(query.Term("tag_id", tag_id)))
             elif k == "document_type__id":
                 criterias.append(query.Term("type_id", v))
             elif k == "correspondent__isnull":
@@ -157,6 +183,11 @@ class DelayedQuery:
                 criterias.append(query.DateRange("added", start=isoparse(v), end=None))
             elif k == "added__date__lt":
                 criterias.append(query.DateRange("added", start=None, end=isoparse(v)))
+            elif k == "storage_path__id":
+                criterias.append(query.Term("path_id", v))
+            elif k == "storage_path__isnull":
+                criterias.append(query.Term("has_path", v == "false"))
+
         if len(criterias) > 0:
             return query.And(criterias)
         else:
@@ -241,10 +272,10 @@ class DelayedFullTextQuery(DelayedQuery):
     def _get_query(self):
         q_str = self.query_params["query"]
         qp = MultifieldParser(
-            ["content", "title", "correspondent", "tag", "type"],
+            ["content", "title", "correspondent", "tag", "type", "comments"],
             self.searcher.ixreader.schema,
         )
-        qp.add_plugin(DateParserPlugin())
+        qp.add_plugin(DateParserPlugin(basedate=timezone.now()))
         q = qp.parse(q_str)
 
         corrected = self.searcher.correct_query(q, q_str)

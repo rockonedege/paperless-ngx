@@ -14,8 +14,21 @@
 }
 
 ::ng-deep .ng2-pdf-viewer-container .page {
-  --page-margin: 1px 0 -8px;
+  --page-margin: 1px 0 10px;
   width: 100% !important;
+}
+
+::ng-deep .ng2-pdf-viewer-container .page:last-child {
+  --page-margin: 1px 0 20px;
+}
+
+::ng-deep .ng-select-taggable {
+  max-width: calc(100% - 46px); // fudge factor for ng-select button width
+}
+
+.btn-group .dropdown-toggle-split {
+  border-top-right-radius: inherit;
+  border-bottom-right-radius: inherit;
 }
 
 .password-prompt {
@@ -23,4 +36,8 @@
   top: 30%;
   left: 30%;
   right: 30%;
+}
+
+textarea.rtl {
+  direction: rtl;
 }

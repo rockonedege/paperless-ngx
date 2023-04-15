@@ -3,16 +3,42 @@
 set -e
 
 wait_for_postgres() {
-	attempt_num=1
-	max_attempts=5
+	local attempt_num=1
+	local -r max_attempts=5
 
 	echo "Waiting for PostgreSQL to start..."
 
-	host="${PAPERLESS_DBHOST:=localhost}"
-	port="${PAPERLESS_DBPORT:=5432}"
+	local -r host="${PAPERLESS_DBHOST:-localhost}"
+	local -r port="${PAPERLESS_DBPORT:-5432}"
 
+	# Disable warning, host and port can't have spaces
+	# shellcheck disable=SC2086
+	while [ ! "$(pg_isready -h ${host} -p ${port})" ]; do
 
-	while [ ! "$(pg_isready -h $host -p $port)" ]; do
+		if [ $attempt_num -eq $max_attempts ]; then
+			echo "Unable to connect to database."
+			exit 1
+		else
+			echo "Attempt $attempt_num failed! Trying again in 5 seconds..."
+		fi
+
+		attempt_num=$(("$attempt_num" + 1))
+		sleep 5
+	done
+}
+
+wait_for_mariadb() {
+	echo "Waiting for MariaDB to start..."
+
+	local -r host="${PAPERLESS_DBHOST:=localhost}"
+	local -r port="${PAPERLESS_DBPORT:=3306}"
+
+	local attempt_num=1
+	local -r max_attempts=5
+
+	# Disable warning, host and port can't have spaces
+	# shellcheck disable=SC2086
+	while ! true > /dev/tcp/$host/$port; do
 
 		if [ $attempt_num -eq $max_attempts ]; then
 			echo "Unable to connect to database."
@@ -42,18 +68,25 @@ migrations() {
 		# of the current container starts.
 		flock 200
 		echo "Apply database migrations..."
-		python3 manage.py migrate
-	) 200>/usr/src/paperless/data/migration_lock
+		python3 manage.py migrate --skip-checks --no-input
+	) 200>"${DATA_DIR}/migration_lock"
+}
+
+django_checks() {
+	# Explicitly run the Django system checks
+	echo "Running Django checks"
+	python3 manage.py check
 }
 
 search_index() {
-	index_version=1
-	index_version_file=/usr/src/paperless/data/.index_version
 
-	if [[ (! -f "$index_version_file") || $(<$index_version_file) != "$index_version" ]]; then
+	local -r index_version=3
+	local -r index_version_file=${DATA_DIR}/.index_version
+
+	if [[ (! -f "${index_version_file}") || $(<"${index_version_file}") != "$index_version" ]]; then
 		echo "Search index out of date. Updating..."
-		python3 manage.py document_index reindex
-		echo $index_version | tee $index_version_file >/dev/null
+		python3 manage.py document_index reindex --no-progress-bar
+		echo ${index_version} | tee "${index_version_file}" >/dev/null
 	fi
 }
 
@@ -64,13 +97,17 @@ superuser() {
 }
 
 do_work() {
-	if [[ -n "${PAPERLESS_DBHOST}" ]]; then
+	if [[ "${PAPERLESS_DBENGINE}" == "mariadb" ]]; then
+		wait_for_mariadb
+	elif [[ -n "${PAPERLESS_DBHOST}" ]]; then
 		wait_for_postgres
 	fi
 
 	wait_for_redis
 
 	migrations
+
+	django_checks
 
 	search_index
 

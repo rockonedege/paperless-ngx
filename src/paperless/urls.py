@@ -7,6 +7,7 @@ from django.urls import re_path
 from django.utils.translation import gettext_lazy as _
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import RedirectView
+from documents.views import AcknowledgeTasksView
 from documents.views import BulkDownloadView
 from documents.views import BulkEditView
 from documents.views import CorrespondentViewSet
@@ -19,10 +20,15 @@ from documents.views import SavedViewViewSet
 from documents.views import SearchAutoCompleteView
 from documents.views import SelectionDataView
 from documents.views import StatisticsView
+from documents.views import StoragePathViewSet
 from documents.views import TagViewSet
+from documents.views import TasksViewSet
+from documents.views import UiSettingsView
 from documents.views import UnifiedSearchViewSet
 from paperless.consumers import StatusConsumer
 from paperless.views import FaviconView
+from paperless_mail.views import MailAccountViewSet
+from paperless_mail.views import MailRuleViewSet
 from rest_framework.authtoken import views
 from rest_framework.routers import DefaultRouter
 
@@ -33,6 +39,10 @@ api_router.register(r"documents", UnifiedSearchViewSet)
 api_router.register(r"logs", LogViewSet, basename="logs")
 api_router.register(r"tags", TagViewSet)
 api_router.register(r"saved_views", SavedViewViewSet)
+api_router.register(r"storage_paths", StoragePathViewSet)
+api_router.register(r"tasks", TasksViewSet, basename="tasks")
+api_router.register(r"mail_accounts", MailAccountViewSet)
+api_router.register(r"mail_rules", MailRuleViewSet)
 
 
 urlpatterns = [
@@ -77,6 +87,16 @@ urlpatterns = [
                     r"^remote_version/",
                     RemoteVersionView.as_view(),
                     name="remoteversion",
+                ),
+                re_path(
+                    r"^ui_settings/",
+                    UiSettingsView.as_view(),
+                    name="ui_settings",
+                ),
+                re_path(
+                    r"^acknowledge_tasks/",
+                    AcknowledgeTasksView.as_view(),
+                    name="acknowledge_tasks",
                 ),
                 path("token/", views.obtain_auth_token),
             ]
@@ -134,7 +154,7 @@ urlpatterns = [
 
 
 websocket_urlpatterns = [
-    re_path(r"ws/status/$", StatusConsumer.as_asgi()),
+    path(settings.BASE_URL.lstrip("/") + "ws/status/", StatusConsumer.as_asgi()),
 ]
 
 # Text in each page's <h1> (and above login form).

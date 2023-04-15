@@ -19,12 +19,20 @@
   </svg>
 </app-page-header>
 
-<div class='row'>
+<div class="row">
   <div class="col-lg-8">
-    <app-welcome-widget *ngIf="savedViews.length == 0"></app-welcome-widget>
+    <ng-container *ngIf="savedViewService.loading">
+      <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+      <ng-container i18n>Loading...</ng-container>
+    </ng-container>
 
-    <ng-container *ngFor="let v of savedViews">
-      <app-saved-view-widget [savedView]="v"></app-saved-view-widget>
+    <app-welcome-widget *ngIf="settingsService.offerTour()" tourAnchor="tour.dashboard"></app-welcome-widget>
+
+    <ng-container *ngFor="let v of savedViewService.dashboardViews; first as isFirst">
+      <app-saved-view-widget *ngIf="isFirst; else noTour" [savedView]="v" tourAnchor="tour.dashboard"></app-saved-view-widget>
+      <ng-template #noTour>
+        <app-saved-view-widget [savedView]="v"></app-saved-view-widget>
+      </ng-template>
     </ng-container>
 
   </div>

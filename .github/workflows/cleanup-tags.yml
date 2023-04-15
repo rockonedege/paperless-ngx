@@ -1,0 +1,83 @@
+# This workflow runs on certain conditions to check for and potentially
+# delete container images from the GHCR which no longer have an associated
+# code branch.
+# Requires a PAT with the correct scope set in the secrets.
+#
+# This workflow will not trigger runs on forked repos.
+
+name: Cleanup Image Tags
+
+on:
+  delete:
+  push:
+    paths:
+      - ".github/workflows/cleanup-tags.yml"
+      - ".github/scripts/cleanup-tags.py"
+      - ".github/scripts/github.py"
+      - ".github/scripts/common.py"
+
+concurrency:
+  group: registry-tags-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup-images:
+    name: Cleanup Image Tags for ${{ matrix.primary-name }}
+    if: github.repository_owner == 'paperless-ngx'
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - primary-name: "paperless-ngx"
+            cache-name: "paperless-ngx/builder/cache/app"
+
+          - primary-name: "paperless-ngx/builder/qpdf"
+            cache-name: "paperless-ngx/builder/cache/qpdf"
+
+          - primary-name: "paperless-ngx/builder/pikepdf"
+            cache-name: "paperless-ngx/builder/cache/pikepdf"
+
+          - primary-name: "paperless-ngx/builder/jbig2enc"
+            cache-name: "paperless-ngx/builder/cache/jbig2enc"
+
+          - primary-name: "paperless-ngx/builder/psycopg2"
+            cache-name: "paperless-ngx/builder/cache/psycopg2"
+    env:
+      # Requires a personal access token with the OAuth scope delete:packages
+      TOKEN: ${{ secrets.GHA_CONTAINER_DELETE_TOKEN }}
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v3
+      -
+        name: Login to Github Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      -
+        name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      -
+        name: Install Python libraries
+        run: |
+          python -m pip install httpx docker
+      #
+      # Clean up primary package
+      #
+      -
+        name: Cleanup for package "${{ matrix.primary-name }}"
+        if: "${{ env.TOKEN != '' }}"
+        run: |
+          python ${GITHUB_WORKSPACE}/.github/scripts/cleanup-tags.py --untagged --is-manifest --delete "${{ matrix.primary-name }}"
+      #
+      # Clean up registry cache package
+      #
+      -
+        name: Cleanup for package "${{ matrix.cache-name }}"
+        if: "${{ env.TOKEN != '' }}"
+        run: |
+          python ${GITHUB_WORKSPACE}/.github/scripts/cleanup-tags.py --untagged --delete "${{ matrix.cache-name }}"

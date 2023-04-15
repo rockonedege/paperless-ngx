@@ -56,6 +56,14 @@ class MailRule(models.Model):
         verbose_name = _("mail rule")
         verbose_name_plural = _("mail rules")
 
+    class ConsumptionScope(models.IntegerChoices):
+        ATTACHMENTS_ONLY = 1, _("Only process attachments.")
+        EML_ONLY = 2, _("Process full Mail (with embedded attachments in file) as .eml")
+        EVERYTHING = 3, _(
+            "Process full Mail (with embedded attachments in file) as .eml "
+            "+ process attachments as separate documents",
+        )
+
     class AttachmentProcessing(models.IntegerChoices):
         ATTACHMENTS_ONLY = 1, _("Only process attachments.")
         EVERYTHING = 2, _("Process all files, including 'inline' " "attachments.")
@@ -65,6 +73,7 @@ class MailRule(models.Model):
         MOVE = 2, _("Move to specified folder")
         MARK_READ = 3, _("Mark as read, don't process read mails")
         FLAG = 4, _("Flag the mail, don't process flagged mails")
+        TAG = 5, _("Tag the mail with specified tag, don't process tagged mails")
 
     class TitleSource(models.IntegerChoices):
         FROM_SUBJECT = 1, _("Use subject as title")
@@ -142,6 +151,12 @@ class MailRule(models.Model):
             "Inline attachments include embedded images, so it's best "
             "to combine this option with a filename filter.",
         ),
+    )
+
+    consumption_scope = models.PositiveIntegerField(
+        _("consumption scope"),
+        choices=ConsumptionScope.choices,
+        default=ConsumptionScope.ATTACHMENTS_ONLY,
     )
 
     action = models.PositiveIntegerField(

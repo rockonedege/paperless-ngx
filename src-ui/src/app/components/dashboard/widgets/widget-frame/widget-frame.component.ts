@@ -1,15 +1,16 @@
-import { Component, Input, OnInit } from '@angular/core'
+import { Component, Input } from '@angular/core'
 
 @Component({
   selector: 'app-widget-frame',
   templateUrl: './widget-frame.component.html',
   styleUrls: ['./widget-frame.component.scss'],
 })
-export class WidgetFrameComponent implements OnInit {
+export class WidgetFrameComponent {
   constructor() {}
 
   @Input()
   title: string
 
-  ngOnInit(): void {}
+  @Input()
+  loading: boolean = false
 }

@@ -1,32 +1,38 @@
 import logging
 import os
+from fnmatch import filter
 from pathlib import Path
 from pathlib import PurePath
+from threading import Event
 from threading import Thread
 from time import monotonic
 from time import sleep
 from typing import Final
+from typing import Set
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.core.management.base import CommandError
-from django_q.tasks import async_task
 from documents.models import Tag
 from documents.parsers import is_file_ext_supported
+from documents.tasks import consume_file
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers.polling import PollingObserver
 
 try:
     from inotifyrecursive import INotify, flags
-except ImportError:
+except ImportError:  # pragma: nocover
     INotify = flags = None
 
 logger = logging.getLogger("paperless.management.consumer")
 
 
-def _tags_from_path(filepath):
-    """Walk up the directory tree from filepath to CONSUMPTION_DIR
+def _tags_from_path(filepath) -> Set[Tag]:
+    """
+    Walk up the directory tree from filepath to CONSUMPTION_DIR
     and get or create Tag IDs for every directory.
+
+    Returns set of Tag models
     """
     tag_ids = set()
     path_parts = Path(filepath).relative_to(settings.CONSUMPTION_DIR).parent.parts
@@ -39,11 +45,41 @@ def _tags_from_path(filepath):
 
 
 def _is_ignored(filepath: str) -> bool:
+    """
+    Checks if the given file should be ignored, based on configured
+    patterns.
+
+    Returns True if the file is ignored, False otherwise
+    """
+    filepath = os.path.abspath(
+        os.path.normpath(filepath),
+    )
+
+    # Trim out the consume directory, leaving only filename and it's
+    # path relative to the consume directory
     filepath_relative = PurePath(filepath).relative_to(settings.CONSUMPTION_DIR)
-    return any(filepath_relative.match(p) for p in settings.CONSUMER_IGNORE_PATTERNS)
+
+    # March through the components of the path, including directories and the filename
+    # looking for anything matching
+    # foo/bar/baz/file.pdf -> (foo, bar, baz, file.pdf)
+    parts = []
+    for part in filepath_relative.parts:
+        # If the part is not the name (ie, it's a dir)
+        # Need to append the trailing slash or fnmatch doesn't match
+        # fnmatch("dir", "dir/*") == False
+        # fnmatch("dir/", "dir/*") == True
+        if part != filepath_relative.name:
+            part = part + "/"
+        parts.append(part)
+
+    for pattern in settings.CONSUMER_IGNORE_PATTERNS:
+        if len(filter(parts, pattern)):
+            return True
+
+    return False
 
 
-def _consume(filepath):
+def _consume(filepath: str) -> None:
     if os.path.isdir(filepath) or _is_ignored(filepath):
         return
 
@@ -61,17 +97,19 @@ def _consume(filepath):
 
     read_try_count = 0
     file_open_ok = False
+    os_error_str = None
 
     while (read_try_count < os_error_retry_count) and not file_open_ok:
         try:
             with open(filepath, "rb"):
                 file_open_ok = True
-        except OSError:
+        except OSError as e:
             read_try_count += 1
+            os_error_str = str(e)
             sleep(os_error_retry_wait)
 
     if read_try_count >= os_error_retry_count:
-        logger.warning(f"Not consuming file {filepath}: OS reports file as busy still")
+        logger.warning(f"Not consuming file {filepath}: OS reports {os_error_str}")
         return
 
     tag_ids = None
@@ -83,11 +121,9 @@ def _consume(filepath):
 
     try:
         logger.info(f"Adding {filepath} to the task queue.")
-        async_task(
-            "documents.tasks.consume_file",
+        consume_file.delay(
             filepath,
-            override_tag_ids=tag_ids if tag_ids else None,
-            task_name=os.path.basename(filepath)[:100],
+            override_tag_ids=list(tag_ids) if tag_ids else None,
         )
     except Exception:
         # Catch all so that the consumer won't crash.
@@ -96,7 +132,13 @@ def _consume(filepath):
         logger.exception("Error while consuming document")
 
 
-def _consume_wait_unmodified(file):
+def _consume_wait_unmodified(file: str) -> None:
+    """
+    Waits for the given file to appear unmodified based on file size
+    and modification time.  Will wait a configured number of seconds
+    and retry a configured number of times before either consuming or
+    giving up
+    """
     if _is_ignored(file):
         return
 
@@ -140,9 +182,11 @@ class Command(BaseCommand):
     """
 
     # This is here primarily for the tests and is irrelevant in production.
-    stop_flag = False
-
-    observer = None
+    stop_flag = Event()
+    # Also only for testing, configures in one place the timeout used before checking
+    # the stop flag
+    testing_timeout_s: Final[float] = 0.5
+    testing_timeout_ms: Final[float] = testing_timeout_s * 1000.0
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -153,12 +197,24 @@ class Command(BaseCommand):
         )
         parser.add_argument("--oneshot", action="store_true", help="Run only once.")
 
+        # Only use during unit testing, will configure a timeout
+        # Leaving it unset or false and the consumer will exit when it
+        # receives SIGINT
+        parser.add_argument(
+            "--testing",
+            action="store_true",
+            help="Flag used only for unit testing",
+            default=False,
+        )
+
     def handle(self, *args, **options):
         directory = options["directory"]
         recursive = settings.CONSUMER_RECURSIVE
 
         if not directory:
             raise CommandError("CONSUMPTION_DIR does not appear to be set.")
+
+        directory = os.path.abspath(directory)
 
         if not os.path.isdir(directory):
             raise CommandError(f"Consumption directory {directory} does not exist")
@@ -176,28 +232,39 @@ class Command(BaseCommand):
             return
 
         if settings.CONSUMER_POLLING == 0 and INotify:
-            self.handle_inotify(directory, recursive)
+            self.handle_inotify(directory, recursive, options["testing"])
         else:
-            self.handle_polling(directory, recursive)
+            self.handle_polling(directory, recursive, options["testing"])
 
         logger.debug("Consumer exiting.")
 
-    def handle_polling(self, directory, recursive):
+    def handle_polling(self, directory, recursive, is_testing: bool):
         logger.info(f"Polling directory for changes: {directory}")
-        self.observer = PollingObserver(timeout=settings.CONSUMER_POLLING)
-        self.observer.schedule(Handler(), directory, recursive=recursive)
-        self.observer.start()
-        try:
-            while self.observer.is_alive():
-                self.observer.join(1)
-                if self.stop_flag:
-                    self.observer.stop()
-        except KeyboardInterrupt:
-            self.observer.stop()
-        self.observer.join()
 
-    def handle_inotify(self, directory, recursive):
+        timeout = None
+        if is_testing:
+            timeout = self.testing_timeout_s
+            logger.debug(f"Configuring timeout to {timeout}s")
+
+        observer = PollingObserver(timeout=settings.CONSUMER_POLLING)
+        observer.schedule(Handler(), directory, recursive=recursive)
+        observer.start()
+        try:
+            while observer.is_alive():
+                observer.join(timeout)
+                if self.stop_flag.is_set():
+                    observer.stop()
+        except KeyboardInterrupt:
+            observer.stop()
+        observer.join()
+
+    def handle_inotify(self, directory, recursive, is_testing: bool):
         logger.info(f"Using inotify to watch directory for changes: {directory}")
+
+        timeout = None
+        if is_testing:
+            timeout = self.testing_timeout_ms
+            logger.debug(f"Configuring timeout to {timeout}ms")
 
         inotify = INotify()
         inotify_flags = flags.CLOSE_WRITE | flags.MOVED_TO
@@ -206,14 +273,15 @@ class Command(BaseCommand):
         else:
             descriptor = inotify.add_watch(directory, inotify_flags)
 
-        try:
+        inotify_debounce: Final[float] = settings.CONSUMER_INOTIFY_DELAY
 
-            inotify_debounce: Final[float] = 0.5
-            notified_files = {}
+        finished = False
 
-            while not self.stop_flag:
+        notified_files = {}
 
-                for event in inotify.read(timeout=1000):
+        while not finished:
+            try:
+                for event in inotify.read(timeout=timeout):
                     if recursive:
                         path = inotify.get_path(event.wd)
                     else:
@@ -226,15 +294,42 @@ class Command(BaseCommand):
                 for filepath in notified_files:
                     # Time of the last inotify event for this file
                     last_event_time = notified_files[filepath]
-                    if (monotonic() - last_event_time) > inotify_debounce:
+
+                    # Current time - last time over the configured timeout
+                    waited_long_enough = (
+                        monotonic() - last_event_time
+                    ) > inotify_debounce
+
+                    # Also make sure the file exists still, some scanners might write a
+                    # temporary file first
+                    file_still_exists = os.path.exists(filepath) and os.path.isfile(
+                        filepath,
+                    )
+
+                    if waited_long_enough and file_still_exists:
                         _consume(filepath)
-                    else:
+                    elif file_still_exists:
                         still_waiting[filepath] = last_event_time
+
                 # These files are still waiting to hit the timeout
                 notified_files = still_waiting
 
-        except KeyboardInterrupt:
-            pass
+                # If files are waiting, need to exit read() to check them
+                # Otherwise, go back to infinite sleep time, but only if not testing
+                if len(notified_files) > 0:
+                    timeout = inotify_debounce
+                elif is_testing:
+                    timeout = self.testing_timeout_ms
+                else:
+                    timeout = None
+
+                if self.stop_flag.is_set():
+                    logger.debug("Finishing because event is set")
+                    finished = True
+
+            except KeyboardInterrupt:
+                logger.info("Received SIGINT, stopping inotify")
+                finished = True
 
         inotify.rm_watch(descriptor)
         inotify.close()

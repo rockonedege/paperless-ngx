@@ -1,4 +1,6 @@
 import os
+import re
+import shutil
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -7,20 +9,34 @@ import pytest
 from django.conf import settings
 from django.test import override_settings
 from django.test import TestCase
+from documents.classifier import ClassifierModelCorruptError
 from documents.classifier import DocumentClassifier
 from documents.classifier import IncompatibleClassifierVersionError
 from documents.classifier import load_classifier
 from documents.models import Correspondent
 from documents.models import Document
 from documents.models import DocumentType
+from documents.models import StoragePath
 from documents.models import Tag
 from documents.tests.utils import DirectoriesMixin
 
 
+def dummy_preprocess(content: str):
+    content = content.lower().strip()
+    content = re.sub(r"\s+", " ", content)
+    return content
+
+
 class TestClassifier(DirectoriesMixin, TestCase):
+
+    SAMPLE_MODEL_FILE = os.path.join(os.path.dirname(__file__), "data", "model.pickle")
+
     def setUp(self):
         super().setUp()
         self.classifier = DocumentClassifier()
+        self.classifier.preprocess_content = mock.MagicMock(
+            side_effect=dummy_preprocess,
+        )
 
     def generate_test_data(self):
         self.c1 = Correspondent.objects.create(
@@ -56,6 +72,16 @@ class TestClassifier(DirectoriesMixin, TestCase):
             name="dt2",
             matching_algorithm=DocumentType.MATCH_AUTO,
         )
+        self.sp1 = StoragePath.objects.create(
+            name="sp1",
+            path="path1",
+            matching_algorithm=DocumentType.MATCH_AUTO,
+        )
+        self.sp2 = StoragePath.objects.create(
+            name="sp2",
+            path="path2",
+            matching_algorithm=DocumentType.MATCH_AUTO,
+        )
 
         self.doc1 = Document.objects.create(
             title="doc1",
@@ -64,12 +90,14 @@ class TestClassifier(DirectoriesMixin, TestCase):
             checksum="A",
             document_type=self.dt,
         )
+
         self.doc2 = Document.objects.create(
             title="doc1",
             content="this is another document, but from c2",
             correspondent=self.c2,
             checksum="B",
         )
+
         self.doc_inbox = Document.objects.create(
             title="doc235",
             content="aa",
@@ -80,6 +108,8 @@ class TestClassifier(DirectoriesMixin, TestCase):
         self.doc2.tags.add(self.t1)
         self.doc2.tags.add(self.t3)
         self.doc_inbox.tags.add(self.t2)
+
+        self.doc1.storage_path = self.sp1
 
     def testNoTrainingData(self):
         try:
@@ -175,18 +205,75 @@ class TestClassifier(DirectoriesMixin, TestCase):
 
         new_classifier = DocumentClassifier()
         new_classifier.load()
+        new_classifier.preprocess_content = mock.MagicMock(side_effect=dummy_preprocess)
+
         self.assertFalse(new_classifier.train())
 
-    @override_settings(
-        MODEL_FILE=os.path.join(os.path.dirname(__file__), "data", "model.pickle"),
-    )
+    # @override_settings(
+    #     MODEL_FILE=os.path.join(os.path.dirname(__file__), "data", "model.pickle"),
+    # )
+    # def test_create_test_load_and_classify(self):
+    #     self.generate_test_data()
+    #     self.classifier.train()
+    #     self.classifier.save()
+
     def test_load_and_classify(self):
+        # Generate test data, train and save to the model file
+        # This ensures the model file sklearn version matches
+        # and eliminates a warning
+        shutil.copy(
+            self.SAMPLE_MODEL_FILE,
+            os.path.join(self.dirs.data_dir, "classification_model.pickle"),
+        )
         self.generate_test_data()
+        self.classifier.train()
+        self.classifier.save()
 
         new_classifier = DocumentClassifier()
         new_classifier.load()
+        new_classifier.preprocess_content = mock.MagicMock(side_effect=dummy_preprocess)
 
         self.assertCountEqual(new_classifier.predict_tags(self.doc2.content), [45, 12])
+
+    @mock.patch("documents.classifier.pickle.load")
+    def test_load_corrupt_file(self, patched_pickle_load):
+        """
+        GIVEN:
+            - Corrupted classifier pickle file
+        WHEN:
+            - An attempt is made to load the classifier
+        THEN:
+            - The ClassifierModelCorruptError is raised
+        """
+        shutil.copy(
+            self.SAMPLE_MODEL_FILE,
+            os.path.join(self.dirs.data_dir, "classification_model.pickle"),
+        )
+        # First load is the schema version
+        patched_pickle_load.side_effect = [DocumentClassifier.FORMAT_VERSION, OSError()]
+
+        with self.assertRaises(ClassifierModelCorruptError):
+            self.classifier.load()
+
+    @override_settings(
+        MODEL_FILE=os.path.join(
+            os.path.dirname(__file__),
+            "data",
+            "v1.0.2.model.pickle",
+        ),
+    )
+    def test_load_new_scikit_learn_version(self):
+        """
+        GIVEN:
+            - classifier pickle file created with a different scikit-learn version
+        WHEN:
+            - An attempt is made to load the classifier
+        THEN:
+            - The classifier reports the warning was captured and processed
+        """
+
+        with self.assertRaises(IncompatibleClassifierVersionError):
+            self.classifier.load()
 
     def test_one_correspondent_predict(self):
         c1 = Correspondent.objects.create(
@@ -262,6 +349,45 @@ class TestClassifier(DirectoriesMixin, TestCase):
         self.classifier.train()
         self.assertEqual(self.classifier.predict_document_type(doc1.content), dt.pk)
         self.assertIsNone(self.classifier.predict_document_type(doc2.content))
+
+    def test_one_path_predict(self):
+        sp = StoragePath.objects.create(
+            name="sp",
+            matching_algorithm=StoragePath.MATCH_AUTO,
+        )
+
+        doc1 = Document.objects.create(
+            title="doc1",
+            content="this is a document from c1",
+            checksum="A",
+            storage_path=sp,
+        )
+
+        self.classifier.train()
+        self.assertEqual(self.classifier.predict_storage_path(doc1.content), sp.pk)
+
+    def test_one_path_predict_manydocs(self):
+        sp = StoragePath.objects.create(
+            name="sp",
+            matching_algorithm=StoragePath.MATCH_AUTO,
+        )
+
+        doc1 = Document.objects.create(
+            title="doc1",
+            content="this is a document from c1",
+            checksum="A",
+            storage_path=sp,
+        )
+
+        doc2 = Document.objects.create(
+            title="doc1",
+            content="this is a document from c2",
+            checksum="B",
+        )
+
+        self.classifier.train()
+        self.assertEqual(self.classifier.predict_storage_path(doc1.content), sp.pk)
+        self.assertIsNone(self.classifier.predict_storage_path(doc2.content))
 
     def test_one_tag_predict(self):
         t1 = Tag.objects.create(name="t1", matching_algorithm=Tag.MATCH_AUTO, pk=12)

@@ -1,5 +1,4 @@
 import {
-  AfterViewInit,
   Component,
   OnDestroy,
   OnInit,
@@ -7,10 +6,14 @@ import {
   ViewChild,
   ViewChildren,
 } from '@angular/core'
-import { ActivatedRoute, Router } from '@angular/router'
+import { ActivatedRoute, convertToParamMap, Router } from '@angular/router'
 import { NgbModal } from '@ng-bootstrap/ng-bootstrap'
 import { filter, first, map, Subject, switchMap, takeUntil } from 'rxjs'
-import { FilterRule, isFullTextFilterRule } from 'src/app/data/filter-rule'
+import {
+  FilterRule,
+  filterRulesDiffer,
+  isFullTextFilterRule,
+} from 'src/app/data/filter-rule'
 import { FILTER_FULLTEXT_MORELIKE } from 'src/app/data/filter-rule-type'
 import { PaperlessDocument } from 'src/app/data/paperless-document'
 import { PaperlessSavedView } from 'src/app/data/paperless-saved-view'
@@ -20,10 +23,7 @@ import {
 } from 'src/app/directives/sortable.directive'
 import { ConsumerStatusService } from 'src/app/services/consumer-status.service'
 import { DocumentListViewService } from 'src/app/services/document-list-view.service'
-import {
-  filterRulesFromQueryParams,
-  QueryParamsService,
-} from 'src/app/services/query-params.service'
+import { OpenDocumentsService } from 'src/app/services/open-documents.service'
 import {
   DOCUMENT_SORT_FIELDS,
   DOCUMENT_SORT_FIELDS_FULLTEXT,
@@ -38,7 +38,7 @@ import { SaveViewConfigDialogComponent } from './save-view-config-dialog/save-vi
   templateUrl: './document-list.component.html',
   styleUrls: ['./document-list.component.scss'],
 })
-export class DocumentListComponent implements OnInit, OnDestroy, AfterViewInit {
+export class DocumentListComponent implements OnInit, OnDestroy {
   constructor(
     public list: DocumentListViewService,
     public savedViewService: SavedViewService,
@@ -47,7 +47,7 @@ export class DocumentListComponent implements OnInit, OnDestroy, AfterViewInit {
     private toastService: ToastService,
     private modalService: NgbModal,
     private consumerStatusService: ConsumerStatusService,
-    private queryParamsService: QueryParamsService
+    public openDocumentsService: OpenDocumentsService
   ) {}
 
   @ViewChild('filterEditor')
@@ -58,15 +58,36 @@ export class DocumentListComponent implements OnInit, OnDestroy, AfterViewInit {
   displayMode = 'smallCards' // largeCards, smallCards, details
 
   unmodifiedFilterRules: FilterRule[] = []
+  private unmodifiedSavedView: PaperlessSavedView
 
   private unsubscribeNotifier: Subject<any> = new Subject()
+
+  get savedViewIsModified(): boolean {
+    if (!this.list.activeSavedViewId || !this.unmodifiedSavedView) return false
+    else {
+      return (
+        this.unmodifiedSavedView.sort_field !== this.list.sortField ||
+        this.unmodifiedSavedView.sort_reverse !== this.list.sortReverse ||
+        filterRulesDiffer(
+          this.unmodifiedSavedView.filter_rules,
+          this.list.filterRules
+        )
+      )
+    }
+  }
 
   get isFiltered() {
     return this.list.filterRules?.length > 0
   }
 
   getTitle() {
-    return this.list.activeSavedViewTitle || $localize`Documents`
+    let title = this.list.activeSavedViewTitle
+    if (title && this.savedViewIsModified) {
+      title += '*'
+    } else if (!title) {
+      title = $localize`Documents`
+    }
+    return title
   }
 
   getSortFields() {
@@ -75,26 +96,20 @@ export class DocumentListComponent implements OnInit, OnDestroy, AfterViewInit {
       : DOCUMENT_SORT_FIELDS
   }
 
-  set listSort(reverse: boolean) {
+  set listSortReverse(reverse: boolean) {
     this.list.sortReverse = reverse
-    this.queryParamsService.sortField = this.list.sortField
-    this.queryParamsService.sortReverse = reverse
   }
 
-  get listSort(): boolean {
+  get listSortReverse(): boolean {
     return this.list.sortReverse
   }
 
   setSortField(field: string) {
     this.list.sortField = field
-    this.queryParamsService.sortField = field
-    this.queryParamsService.sortReverse = this.listSort
   }
 
   onSort(event: SortEvent) {
     this.list.setSort(event.column, event.reverse)
-    this.queryParamsService.sortField = event.column
-    this.queryParamsService.sortReverse = event.reverse
   }
 
   get isBulkEditing(): boolean {
@@ -132,9 +147,12 @@ export class DocumentListComponent implements OnInit, OnDestroy, AfterViewInit {
           this.router.navigate(['404'])
           return
         }
-        this.list.activateSavedView(view)
+        this.unmodifiedSavedView = view
+        this.list.activateSavedViewWithQueryParams(
+          view,
+          convertToParamMap(this.route.snapshot.queryParams)
+        )
         this.list.reload()
-        this.queryParamsService.updateFromView(view)
         this.unmodifiedFilterRules = view.filter_rules
       })
 
@@ -149,19 +167,9 @@ export class DocumentListComponent implements OnInit, OnDestroy, AfterViewInit {
           this.loadViewConfig(parseInt(queryParams.get('view')))
         } else {
           this.list.activateSavedView(null)
-          this.queryParamsService.parseQueryParams(queryParams)
+          this.list.loadFromQueryParams(queryParams)
           this.unmodifiedFilterRules = []
         }
-      })
-  }
-
-  ngAfterViewInit(): void {
-    this.filterEditor.filterRulesChange
-      .pipe(takeUntil(this.unsubscribeNotifier))
-      .subscribe({
-        next: (filterRules) => {
-          this.queryParamsService.updateFilterRules(filterRules)
-        },
       })
   }
 
@@ -169,17 +177,6 @@ export class DocumentListComponent implements OnInit, OnDestroy, AfterViewInit {
     // unsubscribes all
     this.unsubscribeNotifier.next(this)
     this.unsubscribeNotifier.complete()
-  }
-
-  loadViewConfig(viewId: number) {
-    this.savedViewService
-      .getCached(viewId)
-      .pipe(first())
-      .subscribe((view) => {
-        this.list.loadSavedView(view)
-        this.list.reload()
-        this.queryParamsService.updateFromView(view)
-      })
   }
 
   saveViewConfig() {
@@ -193,13 +190,25 @@ export class DocumentListComponent implements OnInit, OnDestroy, AfterViewInit {
       this.savedViewService
         .patch(savedView)
         .pipe(first())
-        .subscribe((result) => {
+        .subscribe((view) => {
+          this.unmodifiedSavedView = view
           this.toastService.showInfo(
             $localize`View "${this.list.activeSavedViewTitle}" saved successfully.`
           )
           this.unmodifiedFilterRules = this.list.filterRules
         })
     }
+  }
+
+  loadViewConfig(viewID: number) {
+    this.savedViewService
+      .getCached(viewID)
+      .pipe(first())
+      .subscribe((view) => {
+        this.unmodifiedSavedView = view
+        this.list.activateSavedView(view)
+        this.list.reload()
+      })
   }
 
   saveViewConfigAs() {
@@ -247,27 +256,26 @@ export class DocumentListComponent implements OnInit, OnDestroy, AfterViewInit {
 
   clickTag(tagID: number) {
     this.list.selectNone()
-    setTimeout(() => {
-      this.filterEditor.addTag(tagID)
-    })
+    this.filterEditor.toggleTag(tagID)
   }
 
   clickCorrespondent(correspondentID: number) {
     this.list.selectNone()
-    setTimeout(() => {
-      this.filterEditor.addCorrespondent(correspondentID)
-    })
+    this.filterEditor.toggleCorrespondent(correspondentID)
   }
 
   clickDocumentType(documentTypeID: number) {
     this.list.selectNone()
-    setTimeout(() => {
-      this.filterEditor.addDocumentType(documentTypeID)
-    })
+    this.filterEditor.toggleDocumentType(documentTypeID)
+  }
+
+  clickStoragePath(storagePathID: number) {
+    this.list.selectNone()
+    this.filterEditor.toggleStoragePath(storagePathID)
   }
 
   clickMoreLike(documentID: number) {
-    this.queryParamsService.navigateWithFilterRules([
+    this.list.quickFilter([
       { rule_type: FILTER_FULLTEXT_MORELIKE, value: documentID.toString() },
     ])
   }

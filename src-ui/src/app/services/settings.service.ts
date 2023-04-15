@@ -1,5 +1,7 @@
 import { DOCUMENT } from '@angular/common'
+import { HttpClient } from '@angular/common/http'
 import {
+  EventEmitter,
   Inject,
   Injectable,
   LOCALE_ID,
@@ -9,17 +11,20 @@ import {
 } from '@angular/core'
 import { Meta } from '@angular/platform-browser'
 import { CookieService } from 'ngx-cookie-service'
+import { first, Observable, tap } from 'rxjs'
 import {
   BRIGHTNESS,
   estimateBrightnessForColor,
   hexToHsl,
 } from 'src/app/utils/color'
-
-export interface PaperlessSettings {
-  key: string
-  type: string
-  default: any
-}
+import { environment } from 'src/environments/environment'
+import {
+  PaperlessUiSettings,
+  SETTINGS,
+  SETTINGS_KEYS,
+} from '../data/paperless-uisettings'
+import { SavedViewService } from './rest/saved-view.service'
+import { ToastService } from './toast.service'
 
 export interface LanguageOption {
   code: string
@@ -32,89 +37,45 @@ export interface LanguageOption {
   dateInputFormat?: string
 }
 
-export const SETTINGS_KEYS = {
-  BULK_EDIT_CONFIRMATION_DIALOGS:
-    'general-settings:bulk-edit:confirmation-dialogs',
-  BULK_EDIT_APPLY_ON_CLOSE: 'general-settings:bulk-edit:apply-on-close',
-  DOCUMENT_LIST_SIZE: 'general-settings:documentListSize',
-  DARK_MODE_USE_SYSTEM: 'general-settings:dark-mode:use-system',
-  DARK_MODE_ENABLED: 'general-settings:dark-mode:enabled',
-  DARK_MODE_THUMB_INVERTED: 'general-settings:dark-mode:thumb-inverted',
-  THEME_COLOR: 'general-settings:theme:color',
-  USE_NATIVE_PDF_VIEWER: 'general-settings:document-details:native-pdf-viewer',
-  DATE_LOCALE: 'general-settings:date-display:date-locale',
-  DATE_FORMAT: 'general-settings:date-display:date-format',
-  NOTIFICATIONS_CONSUMER_NEW_DOCUMENT:
-    'general-settings:notifications:consumer-new-documents',
-  NOTIFICATIONS_CONSUMER_SUCCESS:
-    'general-settings:notifications:consumer-success',
-  NOTIFICATIONS_CONSUMER_FAILED:
-    'general-settings:notifications:consumer-failed',
-  NOTIFICATIONS_CONSUMER_SUPPRESS_ON_DASHBOARD:
-    'general-settings:notifications:consumer-suppress-on-dashboard',
-}
-
-const SETTINGS: PaperlessSettings[] = [
-  {
-    key: SETTINGS_KEYS.BULK_EDIT_CONFIRMATION_DIALOGS,
-    type: 'boolean',
-    default: true,
-  },
-  {
-    key: SETTINGS_KEYS.BULK_EDIT_APPLY_ON_CLOSE,
-    type: 'boolean',
-    default: false,
-  },
-  { key: SETTINGS_KEYS.DOCUMENT_LIST_SIZE, type: 'number', default: 50 },
-  { key: SETTINGS_KEYS.DARK_MODE_USE_SYSTEM, type: 'boolean', default: true },
-  { key: SETTINGS_KEYS.DARK_MODE_ENABLED, type: 'boolean', default: false },
-  {
-    key: SETTINGS_KEYS.DARK_MODE_THUMB_INVERTED,
-    type: 'boolean',
-    default: true,
-  },
-  { key: SETTINGS_KEYS.THEME_COLOR, type: 'string', default: '' },
-  { key: SETTINGS_KEYS.USE_NATIVE_PDF_VIEWER, type: 'boolean', default: false },
-  { key: SETTINGS_KEYS.DATE_LOCALE, type: 'string', default: '' },
-  { key: SETTINGS_KEYS.DATE_FORMAT, type: 'string', default: 'mediumDate' },
-  {
-    key: SETTINGS_KEYS.NOTIFICATIONS_CONSUMER_NEW_DOCUMENT,
-    type: 'boolean',
-    default: true,
-  },
-  {
-    key: SETTINGS_KEYS.NOTIFICATIONS_CONSUMER_SUCCESS,
-    type: 'boolean',
-    default: true,
-  },
-  {
-    key: SETTINGS_KEYS.NOTIFICATIONS_CONSUMER_FAILED,
-    type: 'boolean',
-    default: true,
-  },
-  {
-    key: SETTINGS_KEYS.NOTIFICATIONS_CONSUMER_SUPPRESS_ON_DASHBOARD,
-    type: 'boolean',
-    default: true,
-  },
-]
-
 @Injectable({
   providedIn: 'root',
 })
 export class SettingsService {
   private renderer: Renderer2
+  protected baseUrl: string = environment.apiBaseUrl + 'ui_settings/'
+
+  private settings: Object = {}
+
+  public displayName: string
+
+  public settingsSaved: EventEmitter<any> = new EventEmitter()
 
   constructor(
-    private rendererFactory: RendererFactory2,
+    rendererFactory: RendererFactory2,
     @Inject(DOCUMENT) private document,
     private cookieService: CookieService,
     private meta: Meta,
-    @Inject(LOCALE_ID) private localeId: string
+    @Inject(LOCALE_ID) private localeId: string,
+    protected http: HttpClient,
+    private toastService: ToastService,
+    private savedViewService: SavedViewService
   ) {
     this.renderer = rendererFactory.createRenderer(null, null)
+  }
 
-    this.updateAppearanceSettings()
+  // this is called by the app initializer in app.module
+  public initializeSettings(): Observable<PaperlessUiSettings> {
+    return this.http.get<PaperlessUiSettings>(this.baseUrl).pipe(
+      first(),
+      tap((uisettings) => {
+        Object.assign(this.settings, uisettings.settings)
+        this.maybeMigrateSettings()
+        // to update lang cookie
+        if (this.settings['language']?.length)
+          this.setLanguage(this.settings['language'])
+        this.displayName = uisettings.display_name.trim()
+      })
+    )
   }
 
   public updateAppearanceSettings(
@@ -184,6 +145,12 @@ export class SettingsService {
         name: $localize`English (US)`,
         englishName: 'English (US)',
         dateInputFormat: 'mm/dd/yyyy',
+      },
+      {
+        code: 'ar-ar',
+        name: $localize`Arabic`,
+        englishName: 'Arabic',
+        dateInputFormat: 'yyyy-mm-dd',
       },
       {
         code: 'be-by',
@@ -333,11 +300,13 @@ export class SettingsService {
   }
 
   getLanguage(): string {
-    return this.cookieService.get(this.getLanguageCookieName())
+    return this.get(SETTINGS_KEYS.LANGUAGE)
   }
 
   setLanguage(language: string) {
-    if (language) {
+    this.set(SETTINGS_KEYS.LANGUAGE, language)
+    if (language?.length) {
+      // for Django
       this.cookieService.set(this.getLanguageCookieName(), language)
     } else {
       this.cookieService.delete(this.getLanguageCookieName())
@@ -355,6 +324,20 @@ export class SettingsService {
     )
   }
 
+  private getSettingRawValue(key: string): any {
+    let value = null
+    // parse key:key:key into nested object
+    const keys = key.replace('general-settings:', '').split(':')
+    let settingObj = this.settings
+    keys.forEach((keyPart, index) => {
+      keyPart = keyPart.replace(/-/g, '_')
+      if (!settingObj.hasOwnProperty(keyPart)) return
+      if (index == keys.length - 1) value = settingObj[keyPart]
+      else settingObj = settingObj[keyPart]
+    })
+    return value
+  }
+
   get(key: string): any {
     let setting = SETTINGS.find((s) => s.key == key)
 
@@ -362,7 +345,7 @@ export class SettingsService {
       return null
     }
 
-    let value = localStorage.getItem(key)
+    let value = this.getSettingRawValue(key)
 
     if (value != null) {
       switch (setting.type) {
@@ -381,10 +364,101 @@ export class SettingsService {
   }
 
   set(key: string, value: any) {
-    localStorage.setItem(key, value.toString())
+    // parse key:key:key into nested object
+    let settingObj = this.settings
+    const keys = key.replace('general-settings:', '').split(':')
+    keys.forEach((keyPart, index) => {
+      keyPart = keyPart.replace(/-/g, '_')
+      if (!settingObj.hasOwnProperty(keyPart)) settingObj[keyPart] = {}
+      if (index == keys.length - 1) settingObj[keyPart] = value
+      else settingObj = settingObj[keyPart]
+    })
   }
 
-  unset(key: string) {
-    localStorage.removeItem(key)
+  private settingIsSet(key: string): boolean {
+    let value = this.getSettingRawValue(key)
+    return value != null
+  }
+
+  storeSettings(): Observable<any> {
+    return this.http.post(this.baseUrl, { settings: this.settings }).pipe(
+      tap((results) => {
+        if (results.success) {
+          this.settingsSaved.emit()
+        }
+      })
+    )
+  }
+
+  maybeMigrateSettings() {
+    if (
+      !this.settings.hasOwnProperty('documentListSize') &&
+      localStorage.getItem(SETTINGS_KEYS.DOCUMENT_LIST_SIZE)
+    ) {
+      // lets migrate
+      const successMessage = $localize`Successfully completed one-time migratration of settings to the database!`
+      const errorMessage = $localize`Unable to migrate settings to the database, please try saving manually.`
+
+      try {
+        for (const setting in SETTINGS_KEYS) {
+          const key = SETTINGS_KEYS[setting]
+          const value = localStorage.getItem(key)
+          this.set(key, value)
+        }
+        this.set(
+          SETTINGS_KEYS.LANGUAGE,
+          this.cookieService.get(this.getLanguageCookieName())
+        )
+      } catch (error) {
+        this.toastService.showError(errorMessage)
+        console.log(error)
+      }
+
+      this.storeSettings()
+        .pipe(first())
+        .subscribe({
+          next: () => {
+            this.updateAppearanceSettings()
+            this.toastService.showInfo(successMessage)
+          },
+          error: (e) => {
+            this.toastService.showError(errorMessage)
+            console.log(e)
+          },
+        })
+    }
+
+    if (
+      !this.settingIsSet(SETTINGS_KEYS.UPDATE_CHECKING_ENABLED) &&
+      this.get(SETTINGS_KEYS.UPDATE_CHECKING_BACKEND_SETTING) != 'default'
+    ) {
+      this.set(
+        SETTINGS_KEYS.UPDATE_CHECKING_ENABLED,
+        this.get(SETTINGS_KEYS.UPDATE_CHECKING_BACKEND_SETTING).toString() ===
+          'true'
+      )
+
+      this.storeSettings()
+        .pipe(first())
+        .subscribe({
+          error: (e) => {
+            this.toastService.showError(
+              'Error migrating update checking setting'
+            )
+            console.log(e)
+          },
+        })
+    }
+  }
+
+  get updateCheckingIsSet(): boolean {
+    return this.settingIsSet(SETTINGS_KEYS.UPDATE_CHECKING_ENABLED)
+  }
+
+  offerTour(): boolean {
+    return (
+      !this.savedViewService.loading &&
+      this.savedViewService.dashboardViews.length == 0
+    )
   }
 }

@@ -1,5 +1,5 @@
 import { BrowserModule } from '@angular/platform-browser'
-import { NgModule } from '@angular/core'
+import { APP_INITIALIZER, NgModule } from '@angular/core'
 import { AppRoutingModule } from './app-routing.module'
 import { AppComponent } from './app.component'
 import {
@@ -24,6 +24,7 @@ import { CorrespondentEditDialogComponent } from './components/common/edit-dialo
 import { TagEditDialogComponent } from './components/common/edit-dialog/tag-edit-dialog/tag-edit-dialog.component'
 import { DocumentTypeEditDialogComponent } from './components/common/edit-dialog/document-type-edit-dialog/document-type-edit-dialog.component'
 import { TagComponent } from './components/common/tag/tag.component'
+import { ClearableBadgeComponent } from './components/common/clearable-badge/clearable-badge.component'
 import { PageHeaderComponent } from './components/common/page-header/page-header.component'
 import { AppFrameComponent } from './components/app-frame/app-frame.component'
 import { ToastsComponent } from './components/common/toasts/toasts.component'
@@ -38,6 +39,7 @@ import { NgxFileDropModule } from 'ngx-file-drop'
 import { TextComponent } from './components/common/input/text/text.component'
 import { SelectComponent } from './components/common/input/select/select.component'
 import { CheckComponent } from './components/common/input/check/check.component'
+import { PasswordComponent } from './components/common/input/password/password.component'
 import { SaveViewConfigDialogComponent } from './components/document-list/save-view-config-dialog/save-view-config-dialog.component'
 import { TagsComponent } from './components/common/input/tags/tags.component'
 import { SortableDirective } from './directives/sortable.directive'
@@ -61,13 +63,24 @@ import { SafeUrlPipe } from './pipes/safeurl.pipe'
 import { SafeHtmlPipe } from './pipes/safehtml.pipe'
 import { CustomDatePipe } from './pipes/custom-date.pipe'
 import { DateComponent } from './components/common/input/date/date.component'
-import { ISODateTimeAdapter } from './utils/ngb-iso-date-time-adapter'
+import { ISODateAdapter } from './utils/ngb-iso-date-adapter'
 import { LocalizedDateParserFormatter } from './utils/ngb-date-parser-formatter'
 import { ApiVersionInterceptor } from './interceptors/api-version.interceptor'
 import { ColorSliderModule } from 'ngx-color/slider'
 import { ColorComponent } from './components/common/input/color/color.component'
 import { DocumentAsnComponent } from './components/document-asn/document-asn.component'
+import { DocumentCommentsComponent } from './components/document-comments/document-comments.component'
+import { DirtyDocGuard } from './guards/dirty-doc.guard'
+import { DirtySavedViewGuard } from './guards/dirty-saved-view.guard'
+import { StoragePathListComponent } from './components/manage/storage-path-list/storage-path-list.component'
+import { StoragePathEditDialogComponent } from './components/common/edit-dialog/storage-path-edit-dialog/storage-path-edit-dialog.component'
+import { SettingsService } from './services/settings.service'
+import { TasksComponent } from './components/manage/tasks/tasks.component'
+import { TourNgBootstrapModule } from 'ngx-ui-tour-ng-bootstrap'
+import { MailAccountEditDialogComponent } from './components/common/edit-dialog/mail-account-edit-dialog/mail-account-edit-dialog.component'
+import { MailRuleEditDialogComponent } from './components/common/edit-dialog/mail-rule-edit-dialog/mail-rule-edit-dialog.component'
 
+import localeAr from '@angular/common/locales/ar'
 import localeBe from '@angular/common/locales/be'
 import localeCs from '@angular/common/locales/cs'
 import localeDa from '@angular/common/locales/da'
@@ -88,6 +101,7 @@ import localeSv from '@angular/common/locales/sv'
 import localeTr from '@angular/common/locales/tr'
 import localeZh from '@angular/common/locales/zh'
 
+registerLocaleData(localeAr)
 registerLocaleData(localeBe)
 registerLocaleData(localeCs)
 registerLocaleData(localeDa)
@@ -109,6 +123,12 @@ registerLocaleData(localeSv)
 registerLocaleData(localeTr)
 registerLocaleData(localeZh)
 
+function initializeApp(settings: SettingsService) {
+  return () => {
+    return settings.initializeSettings()
+  }
+}
+
 @NgModule({
   declarations: [
     AppComponent,
@@ -118,6 +138,7 @@ registerLocaleData(localeZh)
     TagListComponent,
     DocumentTypeListComponent,
     CorrespondentListComponent,
+    StoragePathListComponent,
     LogsComponent,
     SettingsComponent,
     NotFoundComponent,
@@ -125,7 +146,9 @@ registerLocaleData(localeZh)
     ConfirmDialogComponent,
     TagEditDialogComponent,
     DocumentTypeEditDialogComponent,
+    StoragePathEditDialogComponent,
     TagComponent,
+    ClearableBadgeComponent,
     PageHeaderComponent,
     AppFrameComponent,
     ToastsComponent,
@@ -139,6 +162,7 @@ registerLocaleData(localeZh)
     TextComponent,
     SelectComponent,
     CheckComponent,
+    PasswordComponent,
     SaveViewConfigDialogComponent,
     TagsComponent,
     SortableDirective,
@@ -160,6 +184,10 @@ registerLocaleData(localeZh)
     DateComponent,
     ColorComponent,
     DocumentAsnComponent,
+    DocumentCommentsComponent,
+    TasksComponent,
+    MailAccountEditDialogComponent,
+    MailRuleEditDialogComponent,
   ],
   imports: [
     BrowserModule,
@@ -172,8 +200,15 @@ registerLocaleData(localeZh)
     PdfViewerModule,
     NgSelectModule,
     ColorSliderModule,
+    TourNgBootstrapModule,
   ],
   providers: [
+    {
+      provide: APP_INITIALIZER,
+      useFactory: initializeApp,
+      deps: [SettingsService],
+      multi: true,
+    },
     DatePipe,
     CookieService,
     {
@@ -188,8 +223,10 @@ registerLocaleData(localeZh)
     },
     FilterPipe,
     DocumentTitlePipe,
-    { provide: NgbDateAdapter, useClass: ISODateTimeAdapter },
+    { provide: NgbDateAdapter, useClass: ISODateAdapter },
     { provide: NgbDateParserFormatter, useClass: LocalizedDateParserFormatter },
+    DirtyDocGuard,
+    DirtySavedViewGuard,
   ],
   bootstrap: [AppComponent],
 })

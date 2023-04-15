@@ -95,6 +95,7 @@ echo "============================"
 echo ""
 echo "The URL paperless will be available at. This is required if the"
 echo "installation will be accessible via the web, otherwise can be left blank."
+echo "Example: https://paperless.example.com"
 echo ""
 
 ask "URL" ""
@@ -112,18 +113,20 @@ echo ""
 echo "Paperless requires you to configure the current time zone correctly."
 echo "Otherwise, the dates of your documents may appear off by one day,"
 echo "depending on where you are on earth."
+echo "Example: Europe/Berlin"
+echo "See here for a list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones"
 echo ""
 
 ask "Current time zone" "$default_time_zone"
 TIME_ZONE=$ask_result
 
 echo ""
-echo "Database backend: PostgreSQL and SQLite are available. Use PostgreSQL"
+echo "Database backend: PostgreSQL, MariaDB, and SQLite are available. Use PostgreSQL"
 echo "if unsure. If you're running on a low-power device such as Raspberry"
 echo "Pi, use SQLite to save resources."
 echo ""
 
-ask "Database backend" "postgres" "postgres sqlite"
+ask "Database backend" "postgres" "postgres sqlite mariadb"
 DATABASE_BACKEND=$ask_result
 
 echo ""
@@ -214,9 +217,9 @@ echo ""
 ask_docker_folder "Data folder" ""
 DATA_FOLDER=$ask_result
 
-if [[ "$DATABASE_BACKEND" == "postgres" ]] ; then
+if [[ "$DATABASE_BACKEND" == "postgres" || "$DATABASE_BACKEND" == "mariadb" ]] ; then
 	echo ""
-	echo "The database folder, where postgres stores its data."
+	echo "The database folder, where your database stores its data."
 	echo "Leave empty to have this managed by docker."
 	echo ""
 	echo "CAUTION: If specified, you must specify an absolute path starting with /"
@@ -224,7 +227,7 @@ if [[ "$DATABASE_BACKEND" == "postgres" ]] ; then
 	echo ""
 
 	ask_docker_folder "Database folder" ""
-	POSTGRES_FOLDER=$ask_result
+	DATABASE_FOLDER=$ask_result
 fi
 
 echo ""
@@ -278,13 +281,14 @@ if [[ -z $DATA_FOLDER ]] ; then
 else
 	echo "Data folder: $DATA_FOLDER"
 fi
-if [[ "$DATABASE_BACKEND" == "postgres" ]] ; then
-	if [[ -z $POSTGRES_FOLDER ]] ; then
-		echo "Database (postgres) folder: Managed by docker"
+if [[ "$DATABASE_BACKEND" == "postgres" || "$DATABASE_BACKEND" == "mariadb" ]] ; then
+	if [[ -z $DATABASE_FOLDER ]] ; then
+		echo "Database folder: Managed by docker"
 	else
-		echo "Database (postgres) folder: $POSTGRES_FOLDER"
+		echo "Database folder: $DATABASE_FOLDER"
 	fi
 fi
+
 echo ""
 echo "URL: $URL"
 echo "Port: $PORT"
@@ -317,7 +321,7 @@ fi
 wget "https://raw.githubusercontent.com/paperless-ngx/paperless-ngx/main/docker/compose/docker-compose.$DOCKER_COMPOSE_VERSION.yml" -O docker-compose.yml
 wget "https://raw.githubusercontent.com/paperless-ngx/paperless-ngx/main/docker/compose/.env" -O .env
 
-SECRET_KEY=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | fold -w 64 | head -n 1)
+SECRET_KEY=$(tr --delete --complement 'a-zA-Z0-9' < /dev/urandom 2>/dev/null | head --bytes 64)
 
 DEFAULT_LANGUAGES=("deu eng fra ita spa")
 
@@ -342,7 +346,7 @@ read -r -a OCR_LANGUAGES_ARRAY <<< "${_split_langs}"
 	fi
 } > docker-compose.env
 
-sed -i "s/- 8000:8000/- $PORT:8000/g" docker-compose.yml
+sed -i "s/- \"8000:8000\"/- \"$PORT:8000\"/g" docker-compose.yml
 
 sed -i "s#- \./consume:/usr/src/paperless/consume#- $CONSUME_FOLDER:/usr/src/paperless/consume#g" docker-compose.yml
 
@@ -356,9 +360,16 @@ if [[ -n $DATA_FOLDER ]] ; then
 	sed -i "/^\s*data:/d" docker-compose.yml
 fi
 
-if [[ -n $POSTGRES_FOLDER ]] ; then
-	sed -i "s#- pgdata:/var/lib/postgresql/data#- $POSTGRES_FOLDER:/var/lib/postgresql/data#g" docker-compose.yml
-	sed -i "/^\s*pgdata:/d" docker-compose.yml
+# If the database folder was provided (not blank), replace the pgdata/dbdata volume with a bind mount
+# of the provided folder
+if [[ -n $DATABASE_FOLDER ]] ; then
+	if [[ "$DATABASE_BACKEND" == "postgres" ]] ; then
+		sed -i "s#- pgdata:/var/lib/postgresql/data#- $DATABASE_FOLDER:/var/lib/postgresql/data#g" docker-compose.yml
+		sed -i "/^\s*pgdata:/d" docker-compose.yml
+	elif [[ "$DATABASE_BACKEND" == "mariadb" ]]; then
+		sed -i "s#- dbdata:/var/lib/mysql#- $DATABASE_FOLDER:/var/lib/mysql#g" docker-compose.yml
+		sed -i "/^\s*dbdata:/d" docker-compose.yml
+	fi
 fi
 
 # remove trailing blank lines from end of file
@@ -375,4 +386,4 @@ ${DOCKER_COMPOSE_CMD} pull
 
 ${DOCKER_COMPOSE_CMD} run --rm -e DJANGO_SUPERUSER_PASSWORD="$PASSWORD" webserver createsuperuser --noinput --username "$USERNAME" --email "$EMAIL"
 
-${DOCKER_COMPOSE_CMD} up -d
+${DOCKER_COMPOSE_CMD} up --detach

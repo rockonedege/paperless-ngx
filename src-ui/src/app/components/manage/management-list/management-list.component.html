@@ -1,4 +1,4 @@
-<app-page-header title="{{ typeName | titlecase }}s">
+<app-page-header title="{{ typeNamePlural | titlecase }}">
   <button type="button" class="btn btn-sm btn-outline-primary" (click)="openCreateDialog()" i18n>Create</button>
 </app-page-header>
 
@@ -10,16 +10,16 @@
     </div>
   </div>
 
-  <ngb-pagination class="col-auto" [pageSize]="25" [collectionSize]="collectionSize" [(page)]="page" (pageChange)="reloadData()" aria-label="Default pagination"></ngb-pagination>
+  <ngb-pagination class="col-auto" [pageSize]="25" [collectionSize]="collectionSize" [(page)]="page" [maxSize]="5" (pageChange)="reloadData()" aria-label="Default pagination"></ngb-pagination>
 </div>
 
 <table class="table table-striped align-middle border shadow-sm">
   <thead>
     <tr>
-      <th scope="col" sortable="name" [currentSortField]="sortField" [currentSortReverse]="sortReverse" (sort)="onSort($event)" i18n>Name</th>
-      <th scope="col" class="d-none d-sm-table-cell" sortable="matching_algorithm" [currentSortField]="sortField" [currentSortReverse]="sortReverse" (sort)="onSort($event)" i18n>Matching</th>
-      <th scope="col" sortable="document_count" [currentSortField]="sortField" [currentSortReverse]="sortReverse" (sort)="onSort($event)" i18n>Document count</th>
-      <th scope="col" *ngFor="let column of extraColumns" sortable="{{column.key}}" [currentSortField]="sortField" [currentSortReverse]="sortReverse" (sort)="onSort($event)">{{column.name}}</th>
+      <th scope="col" appSortable="name" [currentSortField]="sortField" [currentSortReverse]="sortReverse" (sort)="onSort($event)" i18n>Name</th>
+      <th scope="col" class="d-none d-sm-table-cell" appSortable="matching_algorithm" [currentSortField]="sortField" [currentSortReverse]="sortReverse" (sort)="onSort($event)" i18n>Matching</th>
+      <th scope="col" appSortable="document_count" [currentSortField]="sortField" [currentSortReverse]="sortReverse" (sort)="onSort($event)" i18n>Document count</th>
+      <th scope="col" *ngFor="let column of extraColumns" appSortable="{{column.key}}" [currentSortField]="sortField" [currentSortReverse]="sortReverse" (sort)="onSort($event)">{{column.name}}</th>
       <th scope="col" i18n>Actions</th>
     </tr>
   </thead>
@@ -71,6 +71,6 @@
 </table>
 
 <div class="d-flex">
-  <div i18n *ngIf="collectionSize > 0">{collectionSize, plural, =1 {One {{typeName}}} other {{{collectionSize || 0}} total {{typeName}}s}}</div>
-  <ngb-pagination *ngIf="collectionSize > 20" class="ms-auto" [pageSize]="25" [collectionSize]="collectionSize" [(page)]="page" (pageChange)="reloadData()" aria-label="Default pagination"></ngb-pagination>
+  <div i18n *ngIf="collectionSize > 0">{collectionSize, plural, =1 {One {{typeName}}} other {{{collectionSize || 0}} total {{typeNamePlural}}}}</div>
+  <ngb-pagination *ngIf="collectionSize > 20" class="ms-auto" [pageSize]="25" [collectionSize]="collectionSize" [(page)]="page" [maxSize]="5" (pageChange)="reloadData()" aria-label="Default pagination"></ngb-pagination>
 </div>

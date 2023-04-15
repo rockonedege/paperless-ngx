@@ -1,7 +1,12 @@
 import logging
 import os
 import shutil
+from pathlib import Path
 
+from celery import states
+from celery.signals import before_task_publish
+from celery.signals import task_postrun
+from celery.signals import task_prerun
 from django.conf import settings
 from django.contrib.admin.models import ADDITION
 from django.contrib.admin.models import LogEntry
@@ -21,8 +26,8 @@ from ..file_handling import delete_empty_directories
 from ..file_handling import generate_unique_filename
 from ..models import Document
 from ..models import MatchingModel
+from ..models import PaperlessTask
 from ..models import Tag
-
 
 logger = logging.getLogger("paperless.handlers")
 
@@ -230,6 +235,76 @@ def set_tags(
         document.tags.add(*relevant_tags)
 
 
+def set_storage_path(
+    sender,
+    document=None,
+    logging_group=None,
+    classifier=None,
+    replace=False,
+    use_first=True,
+    suggest=False,
+    base_url=None,
+    color=False,
+    **kwargs,
+):
+    if document.storage_path and not replace:
+        return
+
+    potential_storage_path = matching.match_storage_paths(
+        document,
+        classifier,
+    )
+
+    potential_count = len(potential_storage_path)
+    if potential_storage_path:
+        selected = potential_storage_path[0]
+    else:
+        selected = None
+
+    if potential_count > 1:
+        if use_first:
+            logger.info(
+                f"Detected {potential_count} potential storage paths, "
+                f"so we've opted for {selected}",
+                extra={"group": logging_group},
+            )
+        else:
+            logger.info(
+                f"Detected {potential_count} potential storage paths, "
+                f"not assigning any storage directory",
+                extra={"group": logging_group},
+            )
+            return
+
+    if selected or replace:
+        if suggest:
+            if base_url:
+                print(
+                    termcolors.colorize(str(document), fg="green")
+                    if color
+                    else str(document),
+                )
+                print(f"{base_url}/documents/{document.pk}")
+            else:
+                print(
+                    (
+                        termcolors.colorize(str(document), fg="green")
+                        if color
+                        else str(document)
+                    )
+                    + f" [{document.pk}]",
+                )
+            print(f"Suggest storage directory {selected}")
+        else:
+            logger.info(
+                f"Assigning storage path {selected} to {document}",
+                extra={"group": logging_group},
+            )
+
+            document.storage_path = selected
+            document.save(update_fields=("storage_path",))
+
+
 @receiver(models.signals.post_delete, sender=Document)
 def cleanup_document_deletion(sender, instance, using, **kwargs):
     with FileLock(settings.MEDIA_LOCK):
@@ -324,6 +399,13 @@ def update_filename_and_move_files(sender, instance, **kwargs):
 
     with FileLock(settings.MEDIA_LOCK):
         try:
+
+            # If this was waiting for the lock, the filename or archive_filename
+            # of this document may have been updated.  This happens if multiple updates
+            # get queued from the UI for the same document
+            # So freshen up the data before doing anything
+            instance.refresh_from_db()
+
             old_filename = instance.filename
             old_source_path = instance.source_path
 
@@ -364,7 +446,8 @@ def update_filename_and_move_files(sender, instance, **kwargs):
                 archive_filename=instance.archive_filename,
             )
 
-        except (OSError, DatabaseError, CannotMoveFilesException):
+        except (OSError, DatabaseError, CannotMoveFilesException) as e:
+            logger.warning(f"Exception during file handling: {e}")
             # This happens when either:
             #  - moving the files failed due to file system errors
             #  - saving to the database failed due to database errors
@@ -373,9 +456,11 @@ def update_filename_and_move_files(sender, instance, **kwargs):
             # Try to move files to their original location.
             try:
                 if move_original and os.path.isfile(instance.source_path):
+                    logger.info("Restoring previous original path")
                     os.rename(instance.source_path, old_source_path)
 
                 if move_archive and os.path.isfile(instance.archive_path):
+                    logger.info("Restoring previous archive path")
                     os.rename(instance.archive_path, old_archive_path)
 
             except Exception:
@@ -385,7 +470,7 @@ def update_filename_and_move_files(sender, instance, **kwargs):
                 #  issue that's going to get caught by the santiy checker.
                 #  All files remain in place and will never be overwritten,
                 #  so this is not the end of the world.
-                # B: if moving the orignal file failed, nothing has changed
+                # B: if moving the original file failed, nothing has changed
                 #  anyway.
                 pass
 
@@ -429,3 +514,93 @@ def add_to_index(sender, document, **kwargs):
     from documents import index
 
     index.add_or_update_document(document)
+
+
+@before_task_publish.connect
+def before_task_publish_handler(sender=None, headers=None, body=None, **kwargs):
+    """
+    Creates the PaperlessTask object in a pending state.  This is sent before
+    the task reaches the broker, but before it begins executing on a worker.
+
+    https://docs.celeryq.dev/en/stable/userguide/signals.html#before-task-publish
+
+    https://docs.celeryq.dev/en/stable/internals/protocol.html#version-2
+
+    """
+    if "task" not in headers or headers["task"] != "documents.tasks.consume_file":
+        # Assumption: this is only ever a v2 message
+        return
+
+    try:
+        task_args = body[0]
+        task_kwargs = body[1]
+
+        task_file_name = ""
+        if "override_filename" in task_kwargs:
+            task_file_name = task_kwargs["override_filename"]
+
+        # Nothing was found, report the task first argument
+        if not len(task_file_name):
+            # There are always some arguments to the consume, first is always filename
+            filepath = Path(task_args[0])
+            task_file_name = filepath.name
+
+        PaperlessTask.objects.create(
+            task_id=headers["id"],
+            status=states.PENDING,
+            task_file_name=task_file_name,
+            task_name=headers["task"],
+            result=None,
+            date_created=timezone.now(),
+            date_started=None,
+            date_done=None,
+        )
+    except Exception as e:  # pragma: no cover
+        # Don't let an exception in the signal handlers prevent
+        # a document from being consumed.
+        logger.error(f"Creating PaperlessTask failed: {e}", exc_info=True)
+
+
+@task_prerun.connect
+def task_prerun_handler(sender=None, task_id=None, task=None, **kwargs):
+    """
+
+    Updates the PaperlessTask to be started.  Sent before the task begins execution
+    on a worker.
+
+    https://docs.celeryq.dev/en/stable/userguide/signals.html#task-prerun
+    """
+    try:
+        task_instance = PaperlessTask.objects.filter(task_id=task_id).first()
+
+        if task_instance is not None:
+            task_instance.status = states.STARTED
+            task_instance.date_started = timezone.now()
+            task_instance.save()
+    except Exception as e:  # pragma: no cover
+        # Don't let an exception in the signal handlers prevent
+        # a document from being consumed.
+        logger.error(f"Setting PaperlessTask started failed: {e}", exc_info=True)
+
+
+@task_postrun.connect
+def task_postrun_handler(
+    sender=None, task_id=None, task=None, retval=None, state=None, **kwargs
+):
+    """
+    Updates the result of the PaperlessTask.
+
+    https://docs.celeryq.dev/en/stable/userguide/signals.html#task-postrun
+    """
+    try:
+        task_instance = PaperlessTask.objects.filter(task_id=task_id).first()
+
+        if task_instance is not None:
+            task_instance.status = state
+            task_instance.result = retval
+            task_instance.date_done = timezone.now()
+            task_instance.save()
+    except Exception as e:  # pragma: no cover
+        # Don't let an exception in the signal handlers prevent
+        # a document from being consumed.
+        logger.error(f"Updating PaperlessTask failed: {e}", exc_info=True)

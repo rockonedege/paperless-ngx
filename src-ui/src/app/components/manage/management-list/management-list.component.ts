@@ -18,7 +18,7 @@ import {
   SortableDirective,
   SortEvent,
 } from 'src/app/directives/sortable.directive'
-import { QueryParamsService } from 'src/app/services/query-params.service'
+import { DocumentListViewService } from 'src/app/services/document-list-view.service'
 import { AbstractNameFilterService } from 'src/app/services/rest/abstract-name-filter-service'
 import { ToastService } from 'src/app/services/toast.service'
 import { ConfirmDialogComponent } from '../../common/confirm-dialog/confirm-dialog.component'
@@ -42,9 +42,10 @@ export abstract class ManagementListComponent<T extends ObjectWithId>
     private modalService: NgbModal,
     private editDialogComponent: any,
     private toastService: ToastService,
-    private queryParamsService: QueryParamsService,
+    private documentListViewService: DocumentListViewService,
     protected filterRuleType: number,
     public typeName: string,
+    public typeNamePlural: string,
     public extraColumns: ManagementListColumn[]
   ) {}
 
@@ -119,8 +120,20 @@ export abstract class ManagementListComponent<T extends ObjectWithId>
       backdrop: 'static',
     })
     activeModal.componentInstance.dialogMode = 'create'
-    activeModal.componentInstance.success.subscribe((o) => {
-      this.reloadData()
+    activeModal.componentInstance.succeeded.subscribe({
+      next: () => {
+        this.reloadData()
+        this.toastService.showInfo(
+          $localize`Successfully created ${this.typeName}.`
+        )
+      },
+      error: (e) => {
+        this.toastService.showInfo(
+          $localize`Error occurred while creating ${
+            this.typeName
+          } : ${e.toString()}.`
+        )
+      },
     })
   }
 
@@ -130,8 +143,20 @@ export abstract class ManagementListComponent<T extends ObjectWithId>
     })
     activeModal.componentInstance.object = object
     activeModal.componentInstance.dialogMode = 'edit'
-    activeModal.componentInstance.success.subscribe((o) => {
-      this.reloadData()
+    activeModal.componentInstance.succeeded.subscribe({
+      next: () => {
+        this.reloadData()
+        this.toastService.showInfo(
+          $localize`Successfully updated ${this.typeName}.`
+        )
+      },
+      error: (e) => {
+        this.toastService.showInfo(
+          $localize`Error occurred while saving ${
+            this.typeName
+          } : ${e.toString()}.`
+        )
+      },
     })
   }
 
@@ -140,7 +165,7 @@ export abstract class ManagementListComponent<T extends ObjectWithId>
   }
 
   filterDocuments(object: ObjectWithId) {
-    this.queryParamsService.navigateWithFilterRules([
+    this.documentListViewService.quickFilter([
       { rule_type: this.filterRuleType, value: object.id.toString() },
     ])
   }

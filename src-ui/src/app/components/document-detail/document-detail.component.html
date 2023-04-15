@@ -1,5 +1,5 @@
 <app-page-header [(title)]="title">
-    <div class="input-group input-group-sm me-5 d-none d-md-flex" *ngIf="getContentType() == 'application/pdf' && !useNativePdfViewer">
+    <div class="input-group input-group-sm me-5 d-none d-md-flex" *ngIf="getContentType() === 'application/pdf' && !useNativePdfViewer">
       <div class="input-group-text" i18n>Page</div>
       <input class="form-control flex-grow-0 w-auto" type="number" min="1" [max]="previewNumPages" [(ngModel)]="previewCurrentPage" />
       <div class="input-group-text" i18n>of {{previewNumPages}}</div>
@@ -8,7 +8,7 @@
     <button type="button" class="btn btn-sm btn-outline-danger me-2 ms-auto" (click)="delete()">
         <svg class="buttonicon" fill="currentColor">
             <use xlink:href="assets/bootstrap-icons.svg#trash" />
-        </svg>&nbsp;<span class="d-none d-lg-inline" i18n>Delete</span>
+        </svg><span class="d-none d-lg-inline ps-1" i18n>Delete</span>
     </button>
 
     <div class="btn-group me-2">
@@ -16,7 +16,7 @@
         <a [href]="downloadUrl" class="btn btn-sm btn-outline-primary">
             <svg class="buttonicon" fill="currentColor">
                 <use xlink:href="assets/bootstrap-icons.svg#download" />
-            </svg>&nbsp;<span class="d-none d-lg-inline" i18n>Download</span>
+            </svg><span class="d-none d-lg-inline ps-1" i18n>Download</span>
         </a>
 
         <div class="btn-group" ngbDropdown role="group" *ngIf="metadata?.has_archive_version">
@@ -28,10 +28,16 @@
 
     </div>
 
+    <button type="button" class="btn btn-sm btn-outline-primary me-2" (click)="redoOcr()">
+        <svg class="buttonicon" fill="currentColor">
+            <use xlink:href="assets/bootstrap-icons.svg#arrow-counterclockwise" />
+        </svg><span class="d-none d-lg-inline ps-1" i18n>Redo OCR</span>
+    </button>
+
     <button type="button" class="btn btn-sm btn-outline-primary me-2" (click)="moreLike()">
         <svg class="buttonicon" fill="currentColor">
-            <use xlink:href="assets/bootstrap-icons.svg#three-dots" />
-        </svg>&nbsp;<span class="d-none d-lg-inline" i18n>More like this</span>
+            <use xlink:href="assets/bootstrap-icons.svg#diagram-3" />
+        </svg><span class="d-none d-lg-inline ps-1" i18n>More like this</span>
     </button>
 
     <button type="button" class="btn btn-sm btn-outline-primary me-2" i18n-title title="Close" (click)="close()">
@@ -57,7 +63,7 @@
 
 
 <div class="row">
-    <div class="col mb-4">
+    <div class="col-md-6 col-xl-4 mb-4">
 
         <form [formGroup]='documentForm' (ngSubmit)="save()">
 
@@ -68,11 +74,14 @@
 
                         <app-input-text #inputTitle i18n-title title="Title" formControlName="title" (keyup)="titleKeyUp($event)" [error]="error?.title"></app-input-text>
                         <app-input-number i18n-title title="Archive serial number" [error]="error?.archive_serial_number" formControlName='archive_serial_number'></app-input-number>
-                        <app-input-date i18n-title title="Date created" formControlName="created" [error]="error?.created"></app-input-date>
+                        <app-input-date i18n-title title="Date created" formControlName="created_date" [suggestions]="suggestions?.dates"
+                            [error]="error?.created_date"></app-input-date>
                         <app-input-select [items]="correspondents" i18n-title title="Correspondent" formControlName="correspondent" [allowNull]="true"
                             (createNew)="createCorrespondent($event)" [suggestions]="suggestions?.correspondents"></app-input-select>
                         <app-input-select [items]="documentTypes" i18n-title title="Document type" formControlName="document_type" [allowNull]="true"
                             (createNew)="createDocumentType($event)" [suggestions]="suggestions?.document_types"></app-input-select>
+                        <app-input-select [items]="storagePaths" i18n-title title="Storage path" formControlName="storage_path" [allowNull]="true"
+                            (createNew)="createStoragePath($event)" [suggestions]="suggestions?.storage_paths" i18n-placeholder placeholder="Default"></app-input-select>
                         <app-input-tags formControlName="tags" [suggestions]="suggestions?.tags"></app-input-tags>
 
                     </ng-template>
@@ -82,7 +91,7 @@
                     <a ngbNavLink i18n>Content</a>
                     <ng-template ngbNavContent>
                         <div class="mb-3">
-                            <textarea class="form-control" id="content" rows="20" formControlName='content'></textarea>
+                            <textarea class="form-control" id="content" rows="20" formControlName='content' [class.rtl]="isRTL"></textarea>
                         </div>
                     </ng-template>
                 </li>
@@ -104,6 +113,10 @@
                                 <tr>
                                     <td i18n>Media filename</td>
                                     <td>{{metadata?.media_filename}}</td>
+                                </tr>
+                                <tr>
+                                    <td i18n>Original filename</td>
+                                    <td>{{metadata?.original_filename}}</td>
                                 </tr>
                                 <tr>
                                     <td i18n>Original MD5 checksum</td>
@@ -136,9 +149,9 @@
 
                 <li [ngbNavItem]="4" class="d-md-none">
                     <a ngbNavLink>Preview</a>
-                    <ng-template ngbNavContent *ngIf="pdfPreview.offsetParent == undefined">
+                    <ng-template ngbNavContent *ngIf="!pdfPreview.offsetParent">
                         <div class="position-relative">
-                            <ng-container *ngIf="getContentType() == 'application/pdf'">
+                            <ng-container *ngIf="getContentType() === 'application/pdf'">
                                 <div class="preview-sticky pdf-viewer-container" *ngIf="!useNativePdfViewer ; else nativePdfViewer">
                                     <pdf-viewer [src]="{ url: previewUrl, password: password }" [original-size]="false" [show-borders]="true" [show-all]="true" [(page)]="previewCurrentPage" [render-text-mode]="2" (error)="onError($event)" (after-load-complete)="pdfPreviewLoaded($event)"></pdf-viewer>
                                 </div>
@@ -146,7 +159,7 @@
                                     <object [data]="previewUrl | safeUrl" class="preview-sticky" width="100%"></object>
                                 </ng-template>
                             </ng-container>
-                            <ng-container *ngIf="getContentType() == 'text/plain'">
+                            <ng-container *ngIf="getContentType() === 'text/plain'">
                                 <object [data]="previewUrl | safeUrl" type="text/plain" class="preview-sticky bg-white" width="100%"></object>
                             </ng-container>
                             <div *ngIf="requiresPassword" class="password-prompt">
@@ -157,18 +170,24 @@
                         </div>
                     </ng-template>
                 </li>
+                <li [ngbNavItem]="5" *ngIf="commentsEnabled">
+                    <a ngbNavLink i18n>Comments</a>
+                    <ng-template ngbNavContent>
+                        <app-document-comments [documentId]="documentId"></app-document-comments>
+                    </ng-template>
+                </li>
             </ul>
 
             <div [ngbNavOutlet]="nav" class="mt-2"></div>
 
-            <button type="button" class="btn btn-outline-secondary" (click)="discard()" i18n [disabled]="networkActive || !(isDirty$ | async)">Discard</button>&nbsp;
-            <button type="button" class="btn btn-outline-primary" (click)="saveEditNext()" *ngIf="hasNext()" i18n [disabled]="networkActive || !(isDirty$ | async) || error">Save & next</button>&nbsp;
-            <button type="submit" class="btn btn-primary" i18n [disabled]="networkActive || !(isDirty$ | async) || error">Save</button>&nbsp;
+            <button type="button" class="btn btn-outline-secondary" (click)="discard()" i18n [disabled]="networkActive || (isDirty$ | async) !== true">Discard</button>&nbsp;
+            <button type="button" class="btn btn-outline-primary" (click)="saveEditNext()" *ngIf="hasNext()" i18n [disabled]="networkActive || (isDirty$ | async) !== true || error">Save & next</button>&nbsp;
+            <button type="submit" class="btn btn-primary" i18n [disabled]="networkActive || (isDirty$ | async) !== true || error">Save</button>&nbsp;
         </form>
     </div>
 
     <div class="col-md-6 col-xl-8 mb-3 d-none d-md-block position-relative" #pdfPreview>
-        <ng-container *ngIf="getContentType() == 'application/pdf'">
+        <ng-container *ngIf="getContentType() === 'application/pdf'">
             <div class="preview-sticky pdf-viewer-container" *ngIf="!useNativePdfViewer ; else nativePdfViewer">
                 <pdf-viewer [src]="{ url: previewUrl, password: password }" [original-size]="false" [show-borders]="true" [show-all]="true" [(page)]="previewCurrentPage" [render-text-mode]="2" (error)="onError($event)" (after-load-complete)="pdfPreviewLoaded($event)"></pdf-viewer>
             </div>
@@ -176,7 +195,7 @@
                 <object [data]="previewUrl | safeUrl" class="preview-sticky" width="100%"></object>
             </ng-template>
         </ng-container>
-        <ng-container *ngIf="getContentType() == 'text/plain'">
+        <ng-container *ngIf="getContentType() === 'text/plain'">
             <object [data]="previewUrl | safeUrl" type="text/plain" class="preview-sticky bg-white" width="100%"></object>
         </ng-container>
         <div *ngIf="requiresPassword" class="password-prompt">

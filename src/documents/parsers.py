@@ -1,3 +1,4 @@
+import datetime
 import logging
 import mimetypes
 import os
@@ -5,8 +6,12 @@ import re
 import shutil
 import subprocess
 import tempfile
+from functools import lru_cache
+from typing import Iterator
+from typing import Match
+from typing import Optional
+from typing import Set
 
-import magic
 from django.conf import settings
 from django.utils import timezone
 from documents.loggers import LoggingMixin
@@ -40,11 +45,20 @@ DATE_REGEX = re.compile(
 logger = logging.getLogger("paperless.parsing")
 
 
-def is_mime_type_supported(mime_type):
+@lru_cache(maxsize=8)
+def is_mime_type_supported(mime_type: str) -> bool:
+    """
+    Returns True if the mime type is supported, False otherwise
+    """
     return get_parser_class_for_mime_type(mime_type) is not None
 
 
-def get_default_file_extension(mime_type):
+@lru_cache(maxsize=8)
+def get_default_file_extension(mime_type: str) -> str:
+    """
+    Returns the default file extension for a mimetype, or
+    an empty string if it could not be determined
+    """
     for response in document_consumer_declaration.send(None):
         parser_declaration = response[1]
         supported_mime_types = parser_declaration["mime_types"]
@@ -59,14 +73,19 @@ def get_default_file_extension(mime_type):
         return ""
 
 
-def is_file_ext_supported(ext):
+@lru_cache(maxsize=8)
+def is_file_ext_supported(ext: str) -> bool:
+    """
+    Returns True if the file extension is supported, False otherwise
+    TODO: Investigate why this really exists, why not use mimetype
+    """
     if ext:
         return ext.lower() in get_supported_file_extensions()
     else:
         return False
 
 
-def get_supported_file_extensions():
+def get_supported_file_extensions() -> Set[str]:
     extensions = set()
     for response in document_consumer_declaration.send(None):
         parser_declaration = response[1]
@@ -74,11 +93,19 @@ def get_supported_file_extensions():
 
         for mime_type in supported_mime_types:
             extensions.update(mimetypes.guess_all_extensions(mime_type))
+            # Python's stdlib might be behind, so also add what the parser
+            # says is the default extension
+            # This makes image/webp supported on Python < 3.11
+            extensions.add(supported_mime_types[mime_type])
 
     return extensions
 
 
-def get_parser_class_for_mime_type(mime_type):
+def get_parser_class_for_mime_type(mime_type: str) -> Optional["DocumentParser"]:
+    """
+    Returns the best parser (by weight) for the given mimetype or
+    None if no parser exists
+    """
 
     options = []
 
@@ -98,16 +125,6 @@ def get_parser_class_for_mime_type(mime_type):
     return sorted(options, key=lambda _: _["weight"], reverse=True)[0]["parser"]
 
 
-def get_parser_class(path):
-    """
-    Determine the appropriate parser class based on the file
-    """
-
-    mime_type = magic.from_file(path, mime=True)
-
-    return get_parser_class_for_mime_type(mime_type)
-
-
 def run_convert(
     input_file,
     output_file,
@@ -121,7 +138,7 @@ def run_convert(
     auto_orient=False,
     extra=None,
     logging_group=None,
-):
+) -> None:
 
     environment = os.environ.copy()
     if settings.CONVERT_MEMORY_LIMIT:
@@ -146,12 +163,15 @@ def run_convert(
         raise ParseError(f"Convert failed at {args}")
 
 
-def get_default_thumbnail():
+def get_default_thumbnail() -> str:
+    """
+    Returns the path to a generic thumbnail
+    """
     return os.path.join(os.path.dirname(__file__), "resources", "document.png")
 
 
-def make_thumbnail_from_pdf_gs_fallback(in_path, temp_dir, logging_group=None):
-    out_path = os.path.join(temp_dir, "convert_gs.png")
+def make_thumbnail_from_pdf_gs_fallback(in_path, temp_dir, logging_group=None) -> str:
+    out_path = os.path.join(temp_dir, "convert_gs.webp")
 
     # if convert fails, fall back to extracting
     # the first PDF page as a PNG using Ghostscript
@@ -184,11 +204,11 @@ def make_thumbnail_from_pdf_gs_fallback(in_path, temp_dir, logging_group=None):
         return get_default_thumbnail()
 
 
-def make_thumbnail_from_pdf(in_path, temp_dir, logging_group=None):
+def make_thumbnail_from_pdf(in_path, temp_dir, logging_group=None) -> str:
     """
     The thumbnail of a PDF is just a 500px wide image of the first page.
     """
-    out_path = os.path.join(temp_dir, "convert.png")
+    out_path = os.path.join(temp_dir, "convert.webp")
 
     # Run convert to get a decent thumbnail
     try:
@@ -209,12 +229,16 @@ def make_thumbnail_from_pdf(in_path, temp_dir, logging_group=None):
     return out_path
 
 
-def parse_date(filename, text):
+def parse_date(filename, text) -> Optional[datetime.datetime]:
+    return next(parse_date_generator(filename, text), None)
+
+
+def parse_date_generator(filename, text) -> Iterator[datetime.datetime]:
     """
     Returns the date of the document.
     """
 
-    def __parser(ds, date_order):
+    def __parser(ds: str, date_order: str) -> datetime.datetime:
         """
         Call dateparser.parse with a particular date ordering
         """
@@ -230,9 +254,9 @@ def parse_date(filename, text):
             },
         )
 
-    def __filter(date):
+    def __filter(date: datetime.datetime) -> Optional[datetime.datetime]:
         if (
-            date
+            date is not None
             and date.year > 1900
             and date <= timezone.now()
             and date.date() not in settings.IGNORE_DATES
@@ -240,38 +264,32 @@ def parse_date(filename, text):
             return date
         return None
 
-    date = None
+    def __process_match(
+        match: Match[str],
+        date_order: str,
+    ) -> Optional[datetime.datetime]:
+        date_string = match.group(0)
+
+        try:
+            date = __parser(date_string, date_order)
+        except Exception:
+            # Skip all matches that do not parse to a proper date
+            date = None
+
+        return __filter(date)
+
+    def __process_content(content: str, date_order: str) -> Iterator[datetime.datetime]:
+        for m in re.finditer(DATE_REGEX, content):
+            date = __process_match(m, date_order)
+            if date is not None:
+                yield date
 
     # if filename date parsing is enabled, search there first:
     if settings.FILENAME_DATE_ORDER:
-        for m in re.finditer(DATE_REGEX, filename):
-            date_string = m.group(0)
-
-            try:
-                date = __parser(date_string, settings.FILENAME_DATE_ORDER)
-            except (TypeError, ValueError):
-                # Skip all matches that do not parse to a proper date
-                continue
-
-            date = __filter(date)
-            if date is not None:
-                return date
+        yield from __process_content(filename, settings.FILENAME_DATE_ORDER)
 
     # Iterate through all regex matches in text and try to parse the date
-    for m in re.finditer(DATE_REGEX, text):
-        date_string = m.group(0)
-
-        try:
-            date = __parser(date_string, settings.DATE_ORDER)
-        except (TypeError, ValueError):
-            # Skip all matches that do not parse to a proper date
-            continue
-
-        date = __filter(date)
-        if date is not None:
-            break
-
-    return date
+    yield from __process_content(text, settings.DATE_ORDER)
 
 
 class ParseError(Exception):
@@ -294,7 +312,7 @@ class DocumentParser(LoggingMixin):
 
         self.archive_path = None
         self.text = None
-        self.date = None
+        self.date: Optional[datetime.datetime] = None
         self.progress_callback = progress_callback
 
     def progress(self, current_progress, max_progress):
@@ -316,33 +334,10 @@ class DocumentParser(LoggingMixin):
         """
         raise NotImplementedError()
 
-    def get_optimised_thumbnail(self, document_path, mime_type, file_name=None):
-        thumbnail = self.get_thumbnail(document_path, mime_type, file_name)
-        if settings.OPTIMIZE_THUMBNAILS:
-            out_path = os.path.join(self.tempdir, "thumb_optipng.png")
-
-            args = (
-                settings.OPTIPNG_BINARY,
-                "-silent",
-                "-o5",
-                thumbnail,
-                "-out",
-                out_path,
-            )
-
-            self.log("debug", f"Execute: {' '.join(args)}")
-
-            if not subprocess.Popen(args).wait() == 0:
-                raise ParseError(f"Optipng failed at {args}")
-
-            return out_path
-        else:
-            return thumbnail
-
     def get_text(self):
         return self.text
 
-    def get_date(self):
+    def get_date(self) -> Optional[datetime.datetime]:
         return self.date
 
     def cleanup(self):

@@ -1,10 +1,12 @@
 import itertools
 
 from django.db.models import Q
-from django_q.tasks import async_task
 from documents.models import Correspondent
 from documents.models import Document
 from documents.models import DocumentType
+from documents.models import StoragePath
+from documents.tasks import bulk_update_documents
+from documents.tasks import update_document_archive_file
 
 
 def set_correspondent(doc_ids, correspondent):
@@ -15,7 +17,24 @@ def set_correspondent(doc_ids, correspondent):
     affected_docs = [doc.id for doc in qs]
     qs.update(correspondent=correspondent)
 
-    async_task("documents.tasks.bulk_update_documents", document_ids=affected_docs)
+    bulk_update_documents.delay(document_ids=affected_docs)
+
+    return "OK"
+
+
+def set_storage_path(doc_ids, storage_path):
+    if storage_path:
+        storage_path = StoragePath.objects.get(id=storage_path)
+
+    qs = Document.objects.filter(
+        Q(id__in=doc_ids) & ~Q(storage_path=storage_path),
+    )
+    affected_docs = [doc.id for doc in qs]
+    qs.update(storage_path=storage_path)
+
+    bulk_update_documents.delay(
+        document_ids=affected_docs,
+    )
 
     return "OK"
 
@@ -28,7 +47,7 @@ def set_document_type(doc_ids, document_type):
     affected_docs = [doc.id for doc in qs]
     qs.update(document_type=document_type)
 
-    async_task("documents.tasks.bulk_update_documents", document_ids=affected_docs)
+    bulk_update_documents.delay(document_ids=affected_docs)
 
     return "OK"
 
@@ -44,7 +63,7 @@ def add_tag(doc_ids, tag):
         [DocumentTagRelationship(document_id=doc, tag_id=tag) for doc in affected_docs],
     )
 
-    async_task("documents.tasks.bulk_update_documents", document_ids=affected_docs)
+    bulk_update_documents.delay(document_ids=affected_docs)
 
     return "OK"
 
@@ -60,7 +79,7 @@ def remove_tag(doc_ids, tag):
         Q(document_id__in=affected_docs) & Q(tag_id=tag),
     ).delete()
 
-    async_task("documents.tasks.bulk_update_documents", document_ids=affected_docs)
+    bulk_update_documents.delay(document_ids=affected_docs)
 
     return "OK"
 
@@ -84,7 +103,7 @@ def modify_tags(doc_ids, add_tags, remove_tags):
         ignore_conflicts=True,
     )
 
-    async_task("documents.tasks.bulk_update_documents", document_ids=affected_docs)
+    bulk_update_documents.delay(document_ids=affected_docs)
 
     return "OK"
 
@@ -97,5 +116,15 @@ def delete(doc_ids):
     with index.open_index_writer() as writer:
         for id in doc_ids:
             index.remove_document_by_id(writer, id)
+
+    return "OK"
+
+
+def redo_ocr(doc_ids):
+
+    for document_id in doc_ids:
+        update_document_archive_file.delay(
+            document_id=document_id,
+        )
 
     return "OK"

@@ -4,6 +4,7 @@ import re
 from documents.models import Correspondent
 from documents.models import DocumentType
 from documents.models import MatchingModel
+from documents.models import StoragePath
 from documents.models import Tag
 
 
@@ -54,6 +55,22 @@ def match_tags(document, classifier):
 
     return list(
         filter(lambda o: matches(o, document) or o.pk in predicted_tag_ids, tags),
+    )
+
+
+def match_storage_paths(document, classifier):
+    if classifier:
+        pred_id = classifier.predict_storage_path(document.content)
+    else:
+        pred_id = None
+
+    storage_paths = StoragePath.objects.all()
+
+    return list(
+        filter(
+            lambda o: matches(o, document) or o.pk == pred_id,
+            storage_paths,
+        ),
     )
 
 
@@ -125,14 +142,14 @@ def matches(matching_model, document):
         return bool(match)
 
     elif matching_model.matching_algorithm == MatchingModel.MATCH_FUZZY:
-        from fuzzywuzzy import fuzz
+        from rapidfuzz import fuzz
 
         match = re.sub(r"[^\w\s]", "", matching_model.match)
         text = re.sub(r"[^\w\s]", "", document_content)
         if matching_model.is_insensitive:
             match = match.lower()
             text = text.lower()
-        if fuzz.partial_ratio(match, text) >= 90:
+        if fuzz.partial_ratio(match, text, score_cutoff=90):
             # TODO: make this better
             log_reason(
                 matching_model,

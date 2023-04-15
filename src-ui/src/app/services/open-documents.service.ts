@@ -55,19 +55,38 @@ export class OpenDocumentsService {
     return this.openDocuments.find((d) => d.id == id)
   }
 
-  openDocument(doc: PaperlessDocument) {
+  openDocument(doc: PaperlessDocument): Observable<boolean> {
     if (this.openDocuments.find((d) => d.id == doc.id) == null) {
-      this.openDocuments.unshift(doc)
-      if (this.openDocuments.length > this.MAX_OPEN_DOCUMENTS) {
-        this.openDocuments.pop()
+      if (this.openDocuments.length == this.MAX_OPEN_DOCUMENTS) {
+        // at max, ensure changes arent lost
+        const docToRemove = this.openDocuments[this.MAX_OPEN_DOCUMENTS - 1]
+        const closeObservable = this.closeDocument(docToRemove)
+        closeObservable.pipe(first()).subscribe((closed) => {
+          if (closed) this.finishOpenDocument(doc)
+        })
+        return closeObservable
+      } else {
+        // not at max
+        this.finishOpenDocument(doc)
       }
-      this.save()
     }
+    return of(true)
   }
 
-  setDirty(documentId: number, dirty: boolean) {
-    if (dirty) this.dirtyDocuments.add(documentId)
-    else this.dirtyDocuments.delete(documentId)
+  private finishOpenDocument(doc: PaperlessDocument) {
+    this.openDocuments.unshift(doc)
+    this.dirtyDocuments.delete(doc.id)
+    this.save()
+  }
+
+  setDirty(doc: PaperlessDocument, dirty: boolean) {
+    if (!this.openDocuments.find((d) => d.id == doc.id)) return
+    if (dirty) this.dirtyDocuments.add(doc.id)
+    else this.dirtyDocuments.delete(doc.id)
+  }
+
+  hasDirty(): boolean {
+    return this.dirtyDocuments.size > 0
   }
 
   closeDocument(doc: PaperlessDocument): Observable<boolean> {
@@ -82,7 +101,11 @@ export class OpenDocumentsService {
         backdrop: 'static',
       })
       modal.componentInstance.title = $localize`Unsaved Changes`
-      modal.componentInstance.messageBold = $localize`You have unsaved changes.`
+      modal.componentInstance.messageBold =
+        $localize`You have unsaved changes to the document` +
+        ' "' +
+        doc.title +
+        '".'
       modal.componentInstance.message = $localize`Are you sure you want to close this document?`
       modal.componentInstance.btnClass = 'btn-warning'
       modal.componentInstance.btnCaption = $localize`Close document`

@@ -3,6 +3,7 @@ import shutil
 import tempfile
 from collections import namedtuple
 from contextlib import contextmanager
+from unittest import mock
 
 from django.apps import apps
 from django.db import connection
@@ -19,6 +20,7 @@ def setup_directories():
     dirs.scratch_dir = tempfile.mkdtemp()
     dirs.media_dir = tempfile.mkdtemp()
     dirs.consumption_dir = tempfile.mkdtemp()
+    dirs.static_dir = tempfile.mkdtemp()
     dirs.index_dir = os.path.join(dirs.data_dir, "index")
     dirs.originals_dir = os.path.join(dirs.media_dir, "documents", "originals")
     dirs.thumbnail_dir = os.path.join(dirs.media_dir, "documents", "thumbnails")
@@ -42,6 +44,7 @@ def setup_directories():
         CONSUMPTION_DIR=dirs.consumption_dir,
         LOGGING_DIR=dirs.logging_dir,
         INDEX_DIR=dirs.index_dir,
+        STATIC_ROOT=dirs.static_dir,
         MODEL_FILE=os.path.join(dirs.data_dir, "classification_model.pickle"),
         MEDIA_LOCK=os.path.join(dirs.media_dir, "media.lock"),
     )
@@ -55,6 +58,7 @@ def remove_dirs(dirs):
     shutil.rmtree(dirs.data_dir, ignore_errors=True)
     shutil.rmtree(dirs.scratch_dir, ignore_errors=True)
     shutil.rmtree(dirs.consumption_dir, ignore_errors=True)
+    shutil.rmtree(dirs.static_dir, ignore_errors=True)
     dirs.settings_override.disable()
 
 
@@ -81,6 +85,30 @@ class DirectoriesMixin:
     def tearDown(self) -> None:
         super().tearDown()
         remove_dirs(self.dirs)
+
+
+class ConsumerProgressMixin:
+    def setUp(self) -> None:
+        self.send_progress_patcher = mock.patch(
+            "documents.consumer.Consumer._send_progress",
+        )
+        self.send_progress_mock = self.send_progress_patcher.start()
+        super().setUp()
+
+    def tearDown(self) -> None:
+        super().tearDown()
+        self.send_progress_patcher.stop()
+
+
+class DocumentConsumeDelayMixin:
+    def setUp(self) -> None:
+        self.consume_file_patcher = mock.patch("documents.tasks.consume_file.delay")
+        self.consume_file_mock = self.consume_file_patcher.start()
+        super().setUp()
+
+    def tearDown(self) -> None:
+        super().tearDown()
+        self.consume_file_patcher.stop()
 
 
 class TestMigrations(TransactionTestCase):

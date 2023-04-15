@@ -1,7 +1,7 @@
-import { Component } from '@angular/core'
+import { Component, HostListener, OnInit } from '@angular/core'
 import { FormControl } from '@angular/forms'
-import { ActivatedRoute, Router, Params } from '@angular/router'
-import { from, Observable, Subscription, BehaviorSubject } from 'rxjs'
+import { ActivatedRoute, Router } from '@angular/router'
+import { from, Observable } from 'rxjs'
 import {
   debounceTime,
   distinctUntilChanged,
@@ -15,37 +15,42 @@ import { SavedViewService } from 'src/app/services/rest/saved-view.service'
 import { SearchService } from 'src/app/services/rest/search.service'
 import { environment } from 'src/environments/environment'
 import { DocumentDetailComponent } from '../document-detail/document-detail.component'
-import { Meta } from '@angular/platform-browser'
 import { DocumentListViewService } from 'src/app/services/document-list-view.service'
 import { FILTER_FULLTEXT_QUERY } from 'src/app/data/filter-rule-type'
 import {
   RemoteVersionService,
   AppRemoteVersion,
 } from 'src/app/services/rest/remote-version.service'
-import { QueryParamsService } from 'src/app/services/query-params.service'
+import { SettingsService } from 'src/app/services/settings.service'
+import { TasksService } from 'src/app/services/tasks.service'
+import { ComponentCanDeactivate } from 'src/app/guards/dirty-doc.guard'
+import { SETTINGS_KEYS } from 'src/app/data/paperless-uisettings'
+import { ToastService } from 'src/app/services/toast.service'
 
 @Component({
   selector: 'app-app-frame',
   templateUrl: './app-frame.component.html',
   styleUrls: ['./app-frame.component.scss'],
 })
-export class AppFrameComponent {
+export class AppFrameComponent implements OnInit, ComponentCanDeactivate {
   constructor(
     public router: Router,
     private activatedRoute: ActivatedRoute,
     private openDocumentsService: OpenDocumentsService,
     private searchService: SearchService,
     public savedViewService: SavedViewService,
-    private list: DocumentListViewService,
-    private meta: Meta,
     private remoteVersionService: RemoteVersionService,
-    private queryParamsService: QueryParamsService
-  ) {
-    this.remoteVersionService
-      .checkForUpdates()
-      .subscribe((appRemoteVersion: AppRemoteVersion) => {
-        this.appRemoteVersion = appRemoteVersion
-      })
+    private list: DocumentListViewService,
+    public settingsService: SettingsService,
+    public tasksService: TasksService,
+    private readonly toastService: ToastService
+  ) {}
+
+  ngOnInit(): void {
+    if (this.settingsService.get(SETTINGS_KEYS.UPDATE_CHECKING_ENABLED)) {
+      this.checkForUpdates()
+    }
+    this.tasksService.reload()
   }
 
   versionString = `${environment.appTitle} ${environment.version}`
@@ -53,14 +58,62 @@ export class AppFrameComponent {
 
   isMenuCollapsed: boolean = true
 
+  slimSidebarAnimating: boolean = false
+
+  toggleSlimSidebar(): void {
+    this.slimSidebarAnimating = true
+    this.slimSidebarEnabled = !this.slimSidebarEnabled
+    setTimeout(() => {
+      this.slimSidebarAnimating = false
+    }, 200) // slightly longer than css animation for slim sidebar
+  }
+
+  get slimSidebarEnabled(): boolean {
+    return this.settingsService.get(SETTINGS_KEYS.SLIM_SIDEBAR)
+  }
+
+  set slimSidebarEnabled(enabled: boolean) {
+    this.settingsService.set(SETTINGS_KEYS.SLIM_SIDEBAR, enabled)
+    this.settingsService
+      .storeSettings()
+      .pipe(first())
+      .subscribe({
+        error: (error) => {
+          this.toastService.showError(
+            $localize`An error occurred while saving settings.`
+          )
+          console.log(error)
+        },
+      })
+  }
+
   closeMenu() {
     this.isMenuCollapsed = true
   }
 
-  searchField = new FormControl('')
-
   get openDocuments(): PaperlessDocument[] {
     return this.openDocumentsService.getOpenDocuments()
+  }
+
+  @HostListener('window:beforeunload')
+  canDeactivate(): Observable<boolean> | boolean {
+    return !this.openDocumentsService.hasDirty()
+  }
+
+  searchField = new FormControl('')
+
+  get searchFieldEmpty(): boolean {
+    return this.searchField.value.trim().length == 0
+  }
+
+  resetSearchField() {
+    this.searchField.reset('')
+  }
+
+  searchFieldKeyup(event: KeyboardEvent) {
+    if (event.key == 'Escape') {
+      this.resetSearchField()
+    }
   }
 
   searchAutoComplete = (text$: Observable<string>) =>
@@ -94,7 +147,7 @@ export class AppFrameComponent {
 
   search() {
     this.closeMenu()
-    this.queryParamsService.navigateWithFilterRules([
+    this.list.quickFilter([
       {
         rule_type: FILTER_FULLTEXT_QUERY,
         value: (this.searchField.value as string).trim(),
@@ -144,16 +197,29 @@ export class AppFrameComponent {
       })
   }
 
-  get displayName() {
-    // TODO: taken from dashboard component, is this the best way to pass around username?
-    let tagFullName = this.meta.getTag('name=full_name')
-    let tagUsername = this.meta.getTag('name=username')
-    if (tagFullName && tagFullName.content) {
-      return tagFullName.content
-    } else if (tagUsername && tagUsername.content) {
-      return tagUsername.content
-    } else {
-      return null
+  private checkForUpdates() {
+    this.remoteVersionService
+      .checkForUpdates()
+      .subscribe((appRemoteVersion: AppRemoteVersion) => {
+        this.appRemoteVersion = appRemoteVersion
+      })
+  }
+
+  setUpdateChecking(enable: boolean) {
+    this.settingsService.set(SETTINGS_KEYS.UPDATE_CHECKING_ENABLED, enable)
+    this.settingsService
+      .storeSettings()
+      .pipe(first())
+      .subscribe({
+        error: (error) => {
+          this.toastService.showError(
+            $localize`An error occurred while saving update checking settings.`
+          )
+          console.log(error)
+        },
+      })
+    if (enable) {
+      this.checkForUpdates()
     }
   }
 }

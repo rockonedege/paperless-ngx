@@ -54,6 +54,9 @@ export class TagsComponent implements OnInit, ControlValueAccessor {
   @Input()
   suggestions: number[]
 
+  @Input()
+  allowCreate: boolean = true
+
   value: number[]
 
   tags: PaperlessTag[]
@@ -62,7 +65,7 @@ export class TagsComponent implements OnInit, ControlValueAccessor {
 
   private _lastSearchTerm: string
 
-  getTag(id) {
+  getTag(id: number) {
     if (this.tags) {
       return this.tags.find((tag) => tag.id == id)
     } else {
@@ -70,7 +73,10 @@ export class TagsComponent implements OnInit, ControlValueAccessor {
     }
   }
 
-  removeTag(id) {
+  removeTag(event: PointerEvent, id: number) {
+    // prevent opening dropdown
+    event.stopImmediatePropagation()
+
     let index = this.value.indexOf(id)
     if (index > -1) {
       let oldValue = this.value
@@ -88,7 +94,7 @@ export class TagsComponent implements OnInit, ControlValueAccessor {
     if (name) modal.componentInstance.object = { name: name }
     else if (this._lastSearchTerm)
       modal.componentInstance.object = { name: this._lastSearchTerm }
-    modal.componentInstance.success.subscribe((newTag) => {
+    modal.componentInstance.succeeded.subscribe((newTag) => {
       this.tagService.listAll().subscribe((tags) => {
         this.tags = tags.results
         this.value = [...this.value, newTag.id]

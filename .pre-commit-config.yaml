@@ -5,7 +5,7 @@
 repos:
   # General hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.2.0
+    rev: v4.4.0
     hooks:
       - id: check-docstring-first
       - id: check-json
@@ -27,7 +27,7 @@ repos:
       - id: check-case-conflict
       - id: detect-private-key
   - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: "v2.6.2"
+    rev: "v2.7.1"
     hooks:
       - id: prettier
         types_or:
@@ -37,33 +37,33 @@ repos:
         exclude: "(^Pipfile\\.lock$)"
   # Python hooks
   - repo: https://github.com/asottile/reorder_python_imports
-    rev: v3.1.0
+    rev: v3.9.0
     hooks:
       - id: reorder-python-imports
         exclude: "(migrations)"
   - repo: https://github.com/asottile/yesqa
-    rev: "v1.3.0"
+    rev: "v1.4.0"
     hooks:
       - id: yesqa
         exclude: "(migrations)"
   - repo: https://github.com/asottile/add-trailing-comma
-    rev: "v2.2.3"
+    rev: "v2.4.0"
     hooks:
       - id: add-trailing-comma
         exclude: "(migrations)"
-  - repo: https://gitlab.com/pycqa/flake8
-    rev: 3.9.2
+  - repo: https://github.com/PyCQA/flake8
+    rev: 6.0.0
     hooks:
       - id: flake8
         files: ^src/
         args:
           - "--config=./src/setup.cfg"
   - repo: https://github.com/psf/black
-    rev: 22.3.0
+    rev: 22.12.0
     hooks:
       - id: black
   - repo: https://github.com/asottile/pyupgrade
-    rev: v2.32.1
+    rev: v3.3.1
     hooks:
       - id: pyupgrade
         exclude: "(migrations)"
@@ -74,13 +74,6 @@ repos:
     rev: v2.10.0
     hooks:
       - id: hadolint
-        args:
-          - --ignore
-          - DL3008      # https://github.com/hadolint/hadolint/wiki/DL3008  (should probably do this at some point)
-          - --ignore
-          - DL3013      # https://github.com/hadolint/hadolint/wiki/DL3013  (should probably do this too at some point)
-          - --ignore
-          - DL3003      # https://github.com/hadolint/hadolint/wiki/DL3003  (seems excessive to use WORKDIR so much)
   # Shell script hooks
   - repo: https://github.com/lovesegfault/beautysh
     rev: v6.2.1
@@ -89,6 +82,6 @@ repos:
         args:
           - "--tab"
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: "v0.8.0.4"
+    rev: "v0.9.0.2"
     hooks:
       - id: shellcheck

@@ -1,7 +1,22 @@
+autolabeler:
+  - label: "bug"
+    branch:
+      - '/^fix/'
+    title:
+      - "/^fix/i"
+      - "/^Bugfix/i"
+  - label: "enhancement"
+    branch:
+      - '/^feature/'
+    title:
+      - "/^feature/i"
 categories:
   - title: 'Breaking Changes'
     labels:
       - 'breaking-change'
+  - title: 'Notable Changes'
+    labels:
+      - 'notable'
   - title: 'Features'
     labels:
       - 'enhancement'
@@ -9,15 +24,23 @@ categories:
     labels:
       - 'bug'
   - title: 'Documentation'
-    label: 'documentation'
+    labels:
+      - 'documentation'
   - title: 'Maintenance'
     labels:
       - 'chore'
       - 'deployment'
       - 'translation'
+      - 'ci-cd'
   - title: 'Dependencies'
     collapse-after: 3
-    label: 'dependencies'
+    labels:
+      - 'dependencies'
+  - title: 'All App Changes'
+    labels:
+      - 'frontend'
+      - 'backend'
+    collapse-after: 0
 include-labels:
   - 'enhancement'
   - 'bug'
@@ -25,11 +48,16 @@ include-labels:
   - 'deployment'
   - 'translation'
   - 'dependencies'
-replacers: # Changes "Feature: Update checker" to "Update checker"
-  - search: '/Feature:|Feat:|\[feature\]/gi'
-    replace: ''
+  - 'documentation'
+  - 'frontend'
+  - 'backend'
+  - 'ci-cd'
+  - 'breaking-change'
+  - 'notable'
+exclude-labels:
+  - 'skip-changelog'
 category-template: '### $TITLE'
-change-template: '- $TITLE [@$AUTHOR](https://github.com/$AUTHOR) ([#$NUMBER]($URL))'
+change-template: '- $TITLE @$AUTHOR ([#$NUMBER]($URL))'
 change-title-escapes: '\<*_&#@'
 template: |
   ## paperless-ngx $RESOLVED_VERSION
