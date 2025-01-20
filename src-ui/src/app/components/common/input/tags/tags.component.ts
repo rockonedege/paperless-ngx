@@ -1,9 +1,28 @@
-import { Component, forwardRef, Input, OnInit } from '@angular/core'
-import { ControlValueAccessor, NG_VALUE_ACCESSOR } from '@angular/forms'
+import {
+  Component,
+  EventEmitter,
+  forwardRef,
+  Input,
+  OnInit,
+  Output,
+  ViewChild,
+} from '@angular/core'
+import {
+  ControlValueAccessor,
+  FormsModule,
+  NG_VALUE_ACCESSOR,
+  ReactiveFormsModule,
+} from '@angular/forms'
+import { RouterModule } from '@angular/router'
 import { NgbModal } from '@ng-bootstrap/ng-bootstrap'
-import { PaperlessTag } from 'src/app/data/paperless-tag'
-import { TagEditDialogComponent } from '../../edit-dialog/tag-edit-dialog/tag-edit-dialog.component'
+import { NgSelectComponent, NgSelectModule } from '@ng-select/ng-select'
+import { NgxBootstrapIconsModule } from 'ngx-bootstrap-icons'
+import { first, firstValueFrom, tap } from 'rxjs'
+import { Tag } from 'src/app/data/tag'
 import { TagService } from 'src/app/services/rest/tag.service'
+import { EditDialogMode } from '../../edit-dialog/edit-dialog.component'
+import { TagEditDialogComponent } from '../../edit-dialog/tag-edit-dialog/tag-edit-dialog.component'
+import { TagComponent } from '../../tag/tag.component'
 
 @Component({
   providers: [
@@ -13,12 +32,23 @@ import { TagService } from 'src/app/services/rest/tag.service'
       multi: true,
     },
   ],
-  selector: 'app-input-tags',
+  selector: 'pngx-input-tags',
   templateUrl: './tags.component.html',
   styleUrls: ['./tags.component.scss'],
+  imports: [
+    TagComponent,
+    NgSelectModule,
+    FormsModule,
+    ReactiveFormsModule,
+    RouterModule,
+    NgxBootstrapIconsModule,
+  ],
 })
 export class TagsComponent implements OnInit, ControlValueAccessor {
-  constructor(private tagService: TagService, private modalService: NgbModal) {
+  constructor(
+    private tagService: TagService,
+    private modalService: NgbModal
+  ) {
     this.createTagRef = this.createTag.bind(this)
   }
 
@@ -46,6 +76,9 @@ export class TagsComponent implements OnInit, ControlValueAccessor {
   }
 
   @Input()
+  title = $localize`Tags`
+
+  @Input()
   disabled = false
 
   @Input()
@@ -54,15 +87,30 @@ export class TagsComponent implements OnInit, ControlValueAccessor {
   @Input()
   suggestions: number[]
 
-  value: number[]
+  @Input()
+  allowCreate: boolean = true
 
-  tags: PaperlessTag[]
+  @Input()
+  hideAddButton: boolean = false
+
+  @Input()
+  showFilter: boolean = false
+
+  @Input()
+  horizontal: boolean = false
+
+  @Output()
+  filterDocuments = new EventEmitter<Tag[]>()
+
+  @ViewChild('tagSelect') select: NgSelectComponent
+
+  value: number[] = []
+
+  tags: Tag[] = []
 
   public createTagRef: (name) => void
 
-  private _lastSearchTerm: string
-
-  getTag(id) {
+  getTag(id: number) {
     if (this.tags) {
       return this.tags.find((tag) => tag.id == id)
     } else {
@@ -70,7 +118,12 @@ export class TagsComponent implements OnInit, ControlValueAccessor {
     }
   }
 
-  removeTag(id) {
+  removeTag(event: PointerEvent, id: number) {
+    if (this.disabled) return
+
+    // prevent opening dropdown
+    event.stopImmediatePropagation()
+
     let index = this.value.indexOf(id)
     if (index > -1) {
       let oldValue = this.value
@@ -84,17 +137,22 @@ export class TagsComponent implements OnInit, ControlValueAccessor {
     var modal = this.modalService.open(TagEditDialogComponent, {
       backdrop: 'static',
     })
-    modal.componentInstance.dialogMode = 'create'
+    modal.componentInstance.dialogMode = EditDialogMode.CREATE
     if (name) modal.componentInstance.object = { name: name }
-    else if (this._lastSearchTerm)
-      modal.componentInstance.object = { name: this._lastSearchTerm }
-    modal.componentInstance.success.subscribe((newTag) => {
-      this.tagService.listAll().subscribe((tags) => {
-        this.tags = tags.results
-        this.value = [...this.value, newTag.id]
-        this.onChange(this.value)
-      })
-    })
+    else if (this.select.searchTerm)
+      modal.componentInstance.object = { name: this.select.searchTerm }
+    this.select.searchTerm = null
+    this.select.detectChanges()
+    return firstValueFrom(
+      (modal.componentInstance as TagEditDialogComponent).succeeded.pipe(
+        first(),
+        tap(() => {
+          this.tagService.listAll().subscribe((tags) => {
+            this.tags = tags.results
+          })
+        })
+      )
+    )
   }
 
   getSuggestions() {
@@ -112,17 +170,15 @@ export class TagsComponent implements OnInit, ControlValueAccessor {
     this.onChange(this.value)
   }
 
-  clearLastSearchTerm() {
-    this._lastSearchTerm = null
+  get hasPrivate(): boolean {
+    return this.value.some(
+      (t) => this.tags?.find((t2) => t2.id === t) === undefined
+    )
   }
 
-  onSearch($event) {
-    this._lastSearchTerm = $event.term
-  }
-
-  onBlur() {
-    setTimeout(() => {
-      this.clearLastSearchTerm()
-    }, 3000)
+  onFilterDocuments() {
+    this.filterDocuments.emit(
+      this.tags.filter((t) => this.value.includes(t.id))
+    )
   }
 }

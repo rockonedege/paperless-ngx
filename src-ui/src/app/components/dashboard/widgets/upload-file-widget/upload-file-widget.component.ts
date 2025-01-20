@@ -1,27 +1,57 @@
-import { HttpEventType } from '@angular/common/http'
-import { Component, OnInit } from '@angular/core'
-import { FileSystemFileEntry, NgxFileDropEntry } from 'ngx-file-drop'
+import { NgClass, NgTemplateOutlet } from '@angular/common'
+import { Component, QueryList, ViewChildren } from '@angular/core'
+import { RouterModule } from '@angular/router'
+import {
+  NgbAlert,
+  NgbAlertModule,
+  NgbCollapseModule,
+  NgbProgressbarModule,
+} from '@ng-bootstrap/ng-bootstrap'
+import { NgxBootstrapIconsModule } from 'ngx-bootstrap-icons'
+import { TourNgBootstrapModule } from 'ngx-ui-tour-ng-bootstrap'
+import { ComponentWithPermissions } from 'src/app/components/with-permissions/with-permissions.component'
+import { SETTINGS_KEYS } from 'src/app/data/ui-settings'
+import { IfPermissionsDirective } from 'src/app/directives/if-permissions.directive'
 import {
   ConsumerStatusService,
   FileStatus,
   FileStatusPhase,
 } from 'src/app/services/consumer-status.service'
+import { SettingsService } from 'src/app/services/settings.service'
 import { UploadDocumentsService } from 'src/app/services/upload-documents.service'
+import { WidgetFrameComponent } from '../widget-frame/widget-frame.component'
 
 const MAX_ALERTS = 5
 
 @Component({
-  selector: 'app-upload-file-widget',
+  selector: 'pngx-upload-file-widget',
   templateUrl: './upload-file-widget.component.html',
   styleUrls: ['./upload-file-widget.component.scss'],
+  imports: [
+    WidgetFrameComponent,
+    IfPermissionsDirective,
+    NgClass,
+    NgTemplateOutlet,
+    RouterModule,
+    NgbAlertModule,
+    NgbCollapseModule,
+    NgbProgressbarModule,
+    NgxBootstrapIconsModule,
+    TourNgBootstrapModule,
+  ],
 })
-export class UploadFileWidgetComponent implements OnInit {
+export class UploadFileWidgetComponent extends ComponentWithPermissions {
   alertsExpanded = false
+
+  @ViewChildren(NgbAlert) alerts: QueryList<NgbAlert>
 
   constructor(
     private consumerStatusService: ConsumerStatusService,
-    private uploadDocumentsService: UploadDocumentsService
-  ) {}
+    private uploadDocumentsService: UploadDocumentsService,
+    public settingsService: SettingsService
+  ) {
+    super()
+  }
 
   getStatus() {
     return this.consumerStatusService.getConsumerStatus().slice(0, MAX_ALERTS)
@@ -70,6 +100,7 @@ export class UploadFileWidgetComponent implements OnInit {
   getStatusCompleted() {
     return this.consumerStatusService.getConsumerStatusCompleted()
   }
+
   getTotalUploadProgress() {
     let current = 0
     let max = 0
@@ -91,8 +122,9 @@ export class UploadFileWidgetComponent implements OnInit {
 
   getStatusColor(status: FileStatus) {
     switch (status.phase) {
-      case FileStatusPhase.PROCESSING:
       case FileStatusPhase.UPLOADING:
+      case FileStatusPhase.STARTED:
+      case FileStatusPhase.WORKING:
         return 'primary'
       case FileStatusPhase.FAILED:
         return 'danger'
@@ -106,16 +138,18 @@ export class UploadFileWidgetComponent implements OnInit {
   }
 
   dismissCompleted() {
-    this.consumerStatusService.dismissCompleted()
+    this.getStatusCompleted().forEach((status) =>
+      this.consumerStatusService.dismiss(status)
+    )
   }
 
-  ngOnInit(): void {}
+  public onFileSelected(event: Event) {
+    this.uploadDocumentsService.uploadFiles(
+      (event.target as HTMLInputElement).files
+    )
+  }
 
-  public fileOver(event) {}
-
-  public fileLeave(event) {}
-
-  public dropped(files: NgxFileDropEntry[]) {
-    this.uploadDocumentsService.uploadFiles(files)
+  get slimSidebarEnabled(): boolean {
+    return this.settingsService.get(SETTINGS_KEYS.SLIM_SIDEBAR)
   }
 }

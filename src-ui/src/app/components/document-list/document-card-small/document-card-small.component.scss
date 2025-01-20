@@ -5,8 +5,7 @@
 .doc-img {
   object-fit: cover;
   object-position: top left;
-  height: 175px;
-  mix-blend-mode: multiply;
+  height: 180px;
 }
 
 .document-card-check {
@@ -34,16 +33,10 @@
   display: block;
 }
 
-.card-selected {
-  border-color:var(--bs-primary);
-
-  .document-card-check {
-    display: block;
-  }
-}
-
-.doc-img-background-selected {
-  background-color: var(--pngx-primary-faded);
+.document-card-notes {
+  position: absolute;
+  right: 0;
+  top: 142px;
 }
 
 .card-info {
@@ -57,12 +50,6 @@
       background-color: transparent !important;
       color: var(--bs-primary);
     }
-  }
-
-  .metadata-icon {
-    width: 0.9rem;
-    height: 0.9rem;
-    padding: 0.05rem;
   }
 }
 
@@ -80,7 +67,7 @@ a {
 }
 
 .tags {
-  top: 0;
+  top: .2rem;
   right: 0;
   max-width: 80%;
   row-gap: .2rem;

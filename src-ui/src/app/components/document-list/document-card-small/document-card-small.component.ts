@@ -1,33 +1,69 @@
+import { AsyncPipe } from '@angular/common'
 import {
+  AfterViewInit,
   Component,
   EventEmitter,
   Input,
-  OnInit,
   Output,
   ViewChild,
 } from '@angular/core'
+import { RouterModule } from '@angular/router'
+import {
+  NgbProgressbarModule,
+  NgbTooltipModule,
+} from '@ng-bootstrap/ng-bootstrap'
+import { NgxBootstrapIconsModule } from 'ngx-bootstrap-icons'
 import { map } from 'rxjs/operators'
-import { PaperlessDocument } from 'src/app/data/paperless-document'
+import {
+  DEFAULT_DISPLAY_FIELDS,
+  DisplayField,
+  Document,
+} from 'src/app/data/document'
+import { SETTINGS_KEYS } from 'src/app/data/ui-settings'
+import { IfPermissionsDirective } from 'src/app/directives/if-permissions.directive'
+import { CustomDatePipe } from 'src/app/pipes/custom-date.pipe'
+import { DocumentTitlePipe } from 'src/app/pipes/document-title.pipe'
+import { IsNumberPipe } from 'src/app/pipes/is-number.pipe'
+import { UsernamePipe } from 'src/app/pipes/username.pipe'
 import { DocumentService } from 'src/app/services/rest/document.service'
 import { SettingsService } from 'src/app/services/settings.service'
-import { NgbPopover } from '@ng-bootstrap/ng-bootstrap'
-import { OpenDocumentsService } from 'src/app/services/open-documents.service'
-import { SETTINGS_KEYS } from 'src/app/data/paperless-uisettings'
+import { CustomFieldDisplayComponent } from '../../common/custom-field-display/custom-field-display.component'
+import { PreviewPopupComponent } from '../../common/preview-popup/preview-popup.component'
+import { TagComponent } from '../../common/tag/tag.component'
+import { LoadingComponentWithPermissions } from '../../loading-component/loading.component'
 
 @Component({
-  selector: 'app-document-card-small',
+  selector: 'pngx-document-card-small',
   templateUrl: './document-card-small.component.html',
-  styleUrls: [
-    './document-card-small.component.scss',
-    '../popover-preview/popover-preview.scss',
+  styleUrls: ['./document-card-small.component.scss'],
+  imports: [
+    DocumentTitlePipe,
+    IsNumberPipe,
+    PreviewPopupComponent,
+    TagComponent,
+    CustomFieldDisplayComponent,
+    AsyncPipe,
+    UsernamePipe,
+    IfPermissionsDirective,
+    CustomDatePipe,
+    RouterModule,
+    NgbTooltipModule,
+    NgbProgressbarModule,
+    NgxBootstrapIconsModule,
   ],
 })
-export class DocumentCardSmallComponent implements OnInit {
+export class DocumentCardSmallComponent
+  extends LoadingComponentWithPermissions
+  implements AfterViewInit
+{
+  DisplayField = DisplayField
+
   constructor(
     private documentService: DocumentService,
-    private settingsService: SettingsService,
-    public openDocumentsService: OpenDocumentsService
-  ) {}
+    public settingsService: SettingsService
+  ) {
+    super()
+  }
 
   @Input()
   selected = false
@@ -36,7 +72,13 @@ export class DocumentCardSmallComponent implements OnInit {
   toggleSelected = new EventEmitter()
 
   @Input()
-  document: PaperlessDocument
+  document: Document
+
+  @Input()
+  displayFields: string[] = DEFAULT_DISPLAY_FIELDS.map((f) => f.id)
+
+  @Output()
+  dblClickDocument = new EventEmitter()
 
   @Output()
   clickTag = new EventEmitter<number>()
@@ -52,12 +94,13 @@ export class DocumentCardSmallComponent implements OnInit {
 
   moreTags: number = null
 
-  @ViewChild('popover') popover: NgbPopover
+  @ViewChild('popupPreview') popupPreview: PreviewPopupComponent
 
-  mouseOnPreview = false
-  popoverHidden = true
-
-  ngOnInit(): void {}
+  ngAfterViewInit(): void {
+    setInterval(() => {
+      this.show = true
+    }, 50)
+  }
 
   getIsThumbInverted() {
     return this.settingsService.get(SETTINGS_KEYS.DARK_MODE_THUMB_INVERTED)
@@ -71,16 +114,17 @@ export class DocumentCardSmallComponent implements OnInit {
     return this.documentService.getDownloadUrl(this.document.id)
   }
 
-  get previewUrl() {
-    return this.documentService.getPreviewUrl(this.document.id)
+  get privateName() {
+    return $localize`Private`
   }
 
   getTagsLimited$() {
-    return this.document.tags$.pipe(
+    const limit = this.document.notes.length > 0 ? 6 : 7
+    return this.document.tags$?.pipe(
       map((tags) => {
-        if (tags.length > 7) {
-          this.moreTags = tags.length - 6
-          return tags.slice(0, 6)
+        if (tags.length > limit) {
+          this.moreTags = tags.length - (limit - 1)
+          return tags.slice(0, limit - 1)
         } else {
           return tags
         }
@@ -88,28 +132,11 @@ export class DocumentCardSmallComponent implements OnInit {
     )
   }
 
-  mouseEnterPreview() {
-    this.mouseOnPreview = true
-    if (!this.popover.isOpen()) {
-      // we're going to open but hide to pre-load content during hover delay
-      this.popover.open()
-      this.popoverHidden = true
-      setTimeout(() => {
-        if (this.mouseOnPreview) {
-          // show popover
-          this.popoverHidden = false
-        } else {
-          this.popover.close()
-        }
-      }, 600)
-    }
-  }
-
-  mouseLeavePreview() {
-    this.mouseOnPreview = false
-  }
-
   mouseLeaveCard() {
-    this.popover.close()
+    this.popupPreview?.close()
+  }
+
+  get notesEnabled(): boolean {
+    return this.settingsService.get(SETTINGS_KEYS.NOTES_ENABLED)
   }
 }

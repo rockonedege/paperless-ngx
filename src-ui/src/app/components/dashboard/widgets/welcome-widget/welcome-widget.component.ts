@@ -1,12 +1,16 @@
-import { Component, OnInit } from '@angular/core'
+import { Component, EventEmitter, Output } from '@angular/core'
+import { NgbAlertModule } from '@ng-bootstrap/ng-bootstrap'
+import { TourService } from 'ngx-ui-tour-ng-bootstrap'
 
 @Component({
-  selector: 'app-welcome-widget',
+  selector: 'pngx-welcome-widget',
   templateUrl: './welcome-widget.component.html',
   styleUrls: ['./welcome-widget.component.scss'],
+  imports: [NgbAlertModule],
 })
-export class WelcomeWidgetComponent implements OnInit {
-  constructor() {}
+export class WelcomeWidgetComponent {
+  constructor(public readonly tourService: TourService) {}
 
-  ngOnInit(): void {}
+  @Output()
+  dismiss: EventEmitter<boolean> = new EventEmitter()
 }

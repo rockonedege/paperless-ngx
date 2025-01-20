@@ -1,14 +1,37 @@
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
+
 from documents.models import Correspondent
 from documents.models import Document
 from documents.models import DocumentType
+from documents.models import StoragePath
 from documents.models import Tag
 from documents.tests.utils import DirectoriesMixin
 
 
 class TestRetagger(DirectoriesMixin, TestCase):
     def make_models(self):
+        self.sp1 = StoragePath.objects.create(
+            name="dummy a",
+            path="{created_data}/{title}",
+            match="auto document",
+            matching_algorithm=StoragePath.MATCH_LITERAL,
+        )
+        self.sp2 = StoragePath.objects.create(
+            name="dummy b",
+            path="{title}",
+            match="^first|^unrelated",
+            matching_algorithm=StoragePath.MATCH_REGEX,
+        )
+
+        self.sp3 = StoragePath.objects.create(
+            name="dummy c",
+            path="{title}",
+            match="^blah",
+            matching_algorithm=StoragePath.MATCH_REGEX,
+        )
+
         self.d1 = Document.objects.create(
             checksum="A",
             title="A",
@@ -23,6 +46,7 @@ class TestRetagger(DirectoriesMixin, TestCase):
             checksum="C",
             title="C",
             content="unrelated document",
+            storage_path=self.sp3,
         )
         self.d4 = Document.objects.create(
             checksum="D",
@@ -146,15 +170,15 @@ class TestRetagger(DirectoriesMixin, TestCase):
         call_command("document_retagger", "--document_type", "--suggest")
         d_first, d_second, d_unrelated, d_auto = self.get_updated_docs()
 
-        self.assertEqual(d_first.document_type, None)
-        self.assertEqual(d_second.document_type, None)
+        self.assertIsNone(d_first.document_type)
+        self.assertIsNone(d_second.document_type)
 
     def test_add_correspondent_suggest(self):
         call_command("document_retagger", "--correspondent", "--suggest")
         d_first, d_second, d_unrelated, d_auto = self.get_updated_docs()
 
-        self.assertEqual(d_first.correspondent, None)
-        self.assertEqual(d_second.correspondent, None)
+        self.assertIsNone(d_first.correspondent)
+        self.assertIsNone(d_second.correspondent)
 
     def test_add_tags_suggest_url(self):
         call_command(
@@ -178,8 +202,8 @@ class TestRetagger(DirectoriesMixin, TestCase):
         )
         d_first, d_second, d_unrelated, d_auto = self.get_updated_docs()
 
-        self.assertEqual(d_first.document_type, None)
-        self.assertEqual(d_second.document_type, None)
+        self.assertIsNone(d_first.document_type)
+        self.assertIsNone(d_second.document_type)
 
     def test_add_correspondent_suggest_url(self):
         call_command(
@@ -190,5 +214,83 @@ class TestRetagger(DirectoriesMixin, TestCase):
         )
         d_first, d_second, d_unrelated, d_auto = self.get_updated_docs()
 
-        self.assertEqual(d_first.correspondent, None)
-        self.assertEqual(d_second.correspondent, None)
+        self.assertIsNone(d_first.correspondent)
+        self.assertIsNone(d_second.correspondent)
+
+    def test_add_storage_path(self):
+        """
+        GIVEN:
+            - 2 storage paths with documents which match them
+            - 1 document which matches but has a storage path
+        WHEN:
+            - document retagger is called
+        THEN:
+            - Matching document's storage paths updated
+            - Non-matching documents have no storage path
+            - Existing storage patch left unchanged
+        """
+        call_command(
+            "document_retagger",
+            "--storage_path",
+        )
+        d_first, d_second, d_unrelated, d_auto = self.get_updated_docs()
+
+        self.assertEqual(d_first.storage_path, self.sp2)
+        self.assertEqual(d_auto.storage_path, self.sp1)
+        self.assertIsNone(d_second.storage_path)
+        self.assertEqual(d_unrelated.storage_path, self.sp3)
+
+    def test_overwrite_storage_path(self):
+        """
+        GIVEN:
+            - 2 storage paths with documents which match them
+            - 1 document which matches but has a storage path
+        WHEN:
+            - document retagger is called with overwrite
+        THEN:
+            - Matching document's storage paths updated
+            - Non-matching documents have no storage path
+            - Existing storage patch overwritten
+        """
+        call_command("document_retagger", "--storage_path", "--overwrite")
+        d_first, d_second, d_unrelated, d_auto = self.get_updated_docs()
+
+        self.assertEqual(d_first.storage_path, self.sp2)
+        self.assertEqual(d_auto.storage_path, self.sp1)
+        self.assertIsNone(d_second.storage_path)
+        self.assertEqual(d_unrelated.storage_path, self.sp2)
+
+    def test_id_range_parameter(self):
+        commandOutput = ""
+        Document.objects.create(
+            checksum="E",
+            title="E",
+            content="NOT the first document",
+        )
+        call_command("document_retagger", "--tags", "--id-range", "1", "2")
+        # The retagger shouldn`t apply the 'first' tag to our new document
+        self.assertEqual(Document.objects.filter(tags__id=self.tag_first.id).count(), 1)
+
+        try:
+            commandOutput = call_command("document_retagger", "--tags", "--id-range")
+        except CommandError:
+            # Just ignore the error
+            None
+        self.assertIn(commandOutput, "Error: argument --id-range: expected 2 arguments")
+
+        try:
+            commandOutput = call_command(
+                "document_retagger",
+                "--tags",
+                "--id-range",
+                "a",
+                "b",
+            )
+        except CommandError:
+            # Just ignore the error
+            None
+        self.assertIn(commandOutput, "error: argument --id-range: invalid int value:")
+
+        call_command("document_retagger", "--tags", "--id-range", "1", "9999")
+        # Now we should have 2 documents
+        self.assertEqual(Document.objects.filter(tags__id=self.tag_first.id).count(), 2)

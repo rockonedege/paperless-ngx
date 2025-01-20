@@ -1,37 +1,74 @@
+import { AsyncPipe } from '@angular/common'
 import {
+  AfterViewInit,
   Component,
   EventEmitter,
   Input,
-  OnInit,
   Output,
   ViewChild,
 } from '@angular/core'
-import { PaperlessDocument } from 'src/app/data/paperless-document'
+import { RouterModule } from '@angular/router'
+import {
+  NgbProgressbarModule,
+  NgbTooltipModule,
+} from '@ng-bootstrap/ng-bootstrap'
+import { NgxBootstrapIconsModule } from 'ngx-bootstrap-icons'
+import {
+  DEFAULT_DISPLAY_FIELDS,
+  DisplayField,
+  Document,
+} from 'src/app/data/document'
+import { SETTINGS_KEYS } from 'src/app/data/ui-settings'
+import { IfPermissionsDirective } from 'src/app/directives/if-permissions.directive'
+import { CustomDatePipe } from 'src/app/pipes/custom-date.pipe'
+import { DocumentTitlePipe } from 'src/app/pipes/document-title.pipe'
+import { IsNumberPipe } from 'src/app/pipes/is-number.pipe'
+import { UsernamePipe } from 'src/app/pipes/username.pipe'
 import { DocumentService } from 'src/app/services/rest/document.service'
 import { SettingsService } from 'src/app/services/settings.service'
-import { NgbPopover } from '@ng-bootstrap/ng-bootstrap'
-import { OpenDocumentsService } from 'src/app/services/open-documents.service'
-import { DocumentListViewService } from 'src/app/services/document-list-view.service'
-import { FILTER_FULLTEXT_MORELIKE } from 'src/app/data/filter-rule-type'
-import { SETTINGS_KEYS } from 'src/app/data/paperless-uisettings'
+import { CustomFieldDisplayComponent } from '../../common/custom-field-display/custom-field-display.component'
+import { PreviewPopupComponent } from '../../common/preview-popup/preview-popup.component'
+import { TagComponent } from '../../common/tag/tag.component'
+import { LoadingComponentWithPermissions } from '../../loading-component/loading.component'
 
 @Component({
-  selector: 'app-document-card-large',
+  selector: 'pngx-document-card-large',
   templateUrl: './document-card-large.component.html',
-  styleUrls: [
-    './document-card-large.component.scss',
-    '../popover-preview/popover-preview.scss',
+  styleUrls: ['./document-card-large.component.scss'],
+  imports: [
+    DocumentTitlePipe,
+    IsNumberPipe,
+    PreviewPopupComponent,
+    TagComponent,
+    CustomFieldDisplayComponent,
+    AsyncPipe,
+    UsernamePipe,
+    IfPermissionsDirective,
+    CustomDatePipe,
+    RouterModule,
+    NgbTooltipModule,
+    NgbProgressbarModule,
+    NgxBootstrapIconsModule,
   ],
 })
-export class DocumentCardLargeComponent implements OnInit {
+export class DocumentCardLargeComponent
+  extends LoadingComponentWithPermissions
+  implements AfterViewInit
+{
+  DisplayField = DisplayField
+
   constructor(
     private documentService: DocumentService,
-    private settingsService: SettingsService,
-    public openDocumentsService: OpenDocumentsService
-  ) {}
+    public settingsService: SettingsService
+  ) {
+    super()
+  }
 
   @Input()
   selected = false
+
+  @Input()
+  displayFields: string[] = DEFAULT_DISPLAY_FIELDS.map((f) => f.id)
 
   @Output()
   toggleSelected = new EventEmitter()
@@ -41,7 +78,10 @@ export class DocumentCardLargeComponent implements OnInit {
   }
 
   @Input()
-  document: PaperlessDocument
+  document: Document
+
+  @Output()
+  dblClickDocument = new EventEmitter()
 
   @Output()
   clickTag = new EventEmitter<number>()
@@ -58,10 +98,16 @@ export class DocumentCardLargeComponent implements OnInit {
   @Output()
   clickMoreLike = new EventEmitter()
 
-  @ViewChild('popover') popover: NgbPopover
+  @ViewChild('popupPreview') popupPreview: PreviewPopupComponent
 
   mouseOnPreview = false
   popoverHidden = true
+
+  ngAfterViewInit(): void {
+    setInterval(() => {
+      this.show = true
+    }, 100)
+  }
 
   get searchScoreClass() {
     if (this.document.__search_hit__) {
@@ -75,7 +121,19 @@ export class DocumentCardLargeComponent implements OnInit {
     }
   }
 
-  ngOnInit(): void {}
+  get searchNoteHighlights() {
+    let highlights = []
+    if (
+      this.document['__search_hit__'] &&
+      this.document['__search_hit__'].note_highlights
+    ) {
+      // only show notes with a match
+      highlights = (this.document['__search_hit__'].note_highlights as string)
+        .split(',')
+        .filter((highlight) => highlight.includes('<span'))
+    }
+    return highlights
+  }
 
   getIsThumbInverted() {
     return this.settingsService.get(SETTINGS_KEYS.DARK_MODE_THUMB_INVERTED)
@@ -89,36 +147,18 @@ export class DocumentCardLargeComponent implements OnInit {
     return this.documentService.getDownloadUrl(this.document.id)
   }
 
-  get previewUrl() {
-    return this.documentService.getPreviewUrl(this.document.id)
-  }
-
-  mouseEnterPreview() {
-    this.mouseOnPreview = true
-    if (!this.popover.isOpen()) {
-      // we're going to open but hide to pre-load content during hover delay
-      this.popover.open()
-      this.popoverHidden = true
-      setTimeout(() => {
-        if (this.mouseOnPreview) {
-          // show popover
-          this.popoverHidden = false
-        } else {
-          this.popover.close()
-        }
-      }, 600)
-    }
-  }
-
-  mouseLeavePreview() {
-    this.mouseOnPreview = false
-  }
-
   mouseLeaveCard() {
-    this.popover.close()
+    this.popupPreview?.close()
   }
 
   get contentTrimmed() {
-    return this.document.content.substr(0, 500)
+    return (
+      this.document.content.substring(0, 500) +
+      (this.document.content.length > 500 ? '...' : '')
+    )
+  }
+
+  get notesEnabled(): boolean {
+    return this.settingsService.get(SETTINGS_KEYS.NOTES_ENABLED)
   }
 }

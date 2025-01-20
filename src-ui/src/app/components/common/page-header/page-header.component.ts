@@ -1,11 +1,15 @@
 import { Component, Input } from '@angular/core'
 import { Title } from '@angular/platform-browser'
+import { NgbPopoverModule } from '@ng-bootstrap/ng-bootstrap'
+import { NgxBootstrapIconsModule } from 'ngx-bootstrap-icons'
+import { TourNgBootstrapModule } from 'ngx-ui-tour-ng-bootstrap'
 import { environment } from 'src/environments/environment'
 
 @Component({
-  selector: 'app-page-header',
+  selector: 'pngx-page-header',
   templateUrl: './page-header.component.html',
   styleUrls: ['./page-header.component.scss'],
+  imports: [NgbPopoverModule, NgxBootstrapIconsModule, TourNgBootstrapModule],
 })
 export class PageHeaderComponent {
   constructor(private titleService: Title) {}
@@ -24,4 +28,10 @@ export class PageHeaderComponent {
 
   @Input()
   subTitle: string = ''
+
+  @Input()
+  info: string
+
+  @Input()
+  infoLink: string
 }

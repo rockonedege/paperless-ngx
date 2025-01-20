@@ -22,6 +22,7 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+/src/paperless_mail/templates/node_modules
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -51,8 +52,8 @@ coverage.xml
 # Django stuff:
 *.log
 
-# Sphinx documentation
-docs/_build/
+# MkDocs documentation
+site/
 
 # PyBuilder
 target/
@@ -65,13 +66,17 @@ target/
 .vscode
 /src-ui/.vscode
 /docs/.vscode
+.vscode-server
+*CommandMarker
 
 # Other stuff that doesn't belong
 .virtualenv
 virtualenv
 /venv
+.venv/
 /docker-compose.env
 /docker-compose.yml
+.ruff_cache/
 
 # Used for development
 scripts/import-for-development
@@ -92,3 +97,12 @@ scripts/nuke
 
 # mac os
 .DS_Store
+
+# celery schedule file
+celerybeat-schedule*
+
+# ignore .devcontainer sub folders
+/.devcontainer/consume/
+/.devcontainer/data/
+/.devcontainer/media/
+/.devcontainer/redisdata/

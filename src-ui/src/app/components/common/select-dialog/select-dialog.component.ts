@@ -1,13 +1,16 @@
-import { Component, EventEmitter, Input, OnInit, Output } from '@angular/core'
+import { Component, EventEmitter, Input, Output } from '@angular/core'
+import { FormsModule, ReactiveFormsModule } from '@angular/forms'
 import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap'
 import { ObjectWithId } from 'src/app/data/object-with-id'
+import { SelectComponent } from '../input/select/select.component'
 
 @Component({
-  selector: 'app-select-dialog',
+  selector: 'pngx-select-dialog',
   templateUrl: './select-dialog.component.html',
   styleUrls: ['./select-dialog.component.scss'],
+  imports: [SelectComponent, FormsModule, ReactiveFormsModule],
 })
-export class SelectDialogComponent implements OnInit {
+export class SelectDialogComponent {
   constructor(public activeModal: NgbActiveModal) {}
 
   @Output()
@@ -23,8 +26,6 @@ export class SelectDialogComponent implements OnInit {
   objects: ObjectWithId[] = []
 
   selected: number
-
-  ngOnInit(): void {}
 
   cancelClicked() {
     this.activeModal.close()

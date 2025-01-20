@@ -1,5 +1,5 @@
 def get_parser(*args, **kwargs):
-    from .parsers import TextDocumentParser
+    from paperless_text.parsers import TextDocumentParser
 
     return TextDocumentParser(*args, **kwargs)
 
@@ -11,5 +11,6 @@ def text_consumer_declaration(sender, **kwargs):
         "mime_types": {
             "text/plain": ".txt",
             "text/csv": ".csv",
+            "application/csv": ".csv",
         },
     }

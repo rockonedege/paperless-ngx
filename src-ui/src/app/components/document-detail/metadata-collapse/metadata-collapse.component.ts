@@ -1,11 +1,14 @@
-import { Component, Input, OnInit } from '@angular/core'
+import { Component, Input } from '@angular/core'
+import { NgbCollapseModule } from '@ng-bootstrap/ng-bootstrap'
+import { NgxBootstrapIconsModule } from 'ngx-bootstrap-icons'
 
 @Component({
-  selector: 'app-metadata-collapse',
+  selector: 'pngx-metadata-collapse',
   templateUrl: './metadata-collapse.component.html',
   styleUrls: ['./metadata-collapse.component.scss'],
+  imports: [NgbCollapseModule, NgxBootstrapIconsModule],
 })
-export class MetadataCollapseComponent implements OnInit {
+export class MetadataCollapseComponent {
   constructor() {}
 
   expand = false
@@ -15,6 +18,4 @@ export class MetadataCollapseComponent implements OnInit {
 
   @Input()
   title = $localize`Metadata`
-
-  ngOnInit(): void {}
 }

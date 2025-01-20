@@ -1,4 +1,11 @@
-import { Directive, EventEmitter, Input, Output } from '@angular/core'
+import {
+  Directive,
+  EventEmitter,
+  HostBinding,
+  HostListener,
+  Input,
+  Output,
+} from '@angular/core'
 
 export interface SortEvent {
   column: string
@@ -6,18 +13,13 @@ export interface SortEvent {
 }
 
 @Directive({
-  selector: 'th[sortable]',
-  host: {
-    '[class.asc]': 'currentSortField == sortable && !currentSortReverse',
-    '[class.des]': 'currentSortField == sortable && currentSortReverse',
-    '(click)': 'rotate()',
-  },
+  selector: 'th[pngxSortable]',
 })
 export class SortableDirective {
   constructor() {}
 
   @Input()
-  sortable: string = ''
+  pngxSortable: string = ''
 
   @Input()
   currentSortReverse: boolean = false
@@ -27,11 +29,22 @@ export class SortableDirective {
 
   @Output() sort = new EventEmitter<SortEvent>()
 
-  rotate() {
-    if (this.currentSortField != this.sortable) {
-      this.sort.emit({ column: this.sortable, reverse: false })
+  @HostBinding('class.asc') get asc() {
+    return (
+      this.currentSortField === this.pngxSortable && !this.currentSortReverse
+    )
+  }
+  @HostBinding('class.des') get des() {
+    return (
+      this.currentSortField === this.pngxSortable && this.currentSortReverse
+    )
+  }
+
+  @HostListener('click') rotate() {
+    if (this.currentSortField != this.pngxSortable) {
+      this.sort.emit({ column: this.pngxSortable, reverse: false })
     } else if (
-      this.currentSortField == this.sortable &&
+      this.currentSortField == this.pngxSortable &&
       !this.currentSortReverse
     ) {
       this.sort.emit({ column: this.currentSortField, reverse: true })

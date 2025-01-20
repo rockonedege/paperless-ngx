@@ -38,7 +38,6 @@ ask_docker_folder() {
 			echo "Invalid folder: $result"
 		fi
 
-
 	done
 }
 
@@ -57,14 +56,9 @@ if ! command -v docker &> /dev/null ; then
 	exit 1
 fi
 
-DOCKER_COMPOSE_CMD="docker-compose"
-if ! command -v ${DOCKER_COMPOSE_CMD} ; then
-	if docker compose version &> /dev/null ; then
-		DOCKER_COMPOSE_CMD="docker compose"
-	else
-		echo "docker-compose executable not found. Is docker-compose installed?"
-		exit 1
-	fi
+if ! docker compose &> /dev/null ; then
+	echo "docker compose plugin not found. Is docker compose installed?"
+	exit 1
 fi
 
 # Check if user has permissions to run Docker by trying to get the status of Docker (docker status).
@@ -72,12 +66,22 @@ fi
 if ! docker stats --no-stream &> /dev/null ; then
 	echo ""
 	echo "WARN: It look like the current user does not have Docker permissions."
-	echo "WARN: Use 'sudo usermod -aG docker $USER' to assign Docker permissions to the user."
+	echo "WARN: Use 'sudo usermod -aG docker $USER' to assign Docker permissions to the user (may require restarting shell)."
 	echo ""
 	sleep 3
 fi
 
-default_time_zone=$(timedatectl show -p Timezone --value)
+# Added handling for timezone for busybox based linux, not having timedatectl available (i.e. QNAP QTS)
+# if neither timedatectl nor /etc/TZ is succeeding, defaulting to GMT.
+if  command -v timedatectl &> /dev/null ; then
+	default_time_zone=$(timedatectl show -p Timezone --value)
+elif [ -f /etc/TZ ] && [ -f /etc/tzlist ] ; then
+	TZ=$(cat /etc/TZ)
+	default_time_zone=$(grep -B 1 -m 1 "$TZ" /etc/tzlist | head -1 | cut -f 2 -d =)
+else
+	echo "WARN: unable to detect timezone, defaulting to Etc/UTC"
+	default_time_zone="Etc/UTC"
+fi
 
 set -e
 
@@ -95,6 +99,7 @@ echo "============================"
 echo ""
 echo "The URL paperless will be available at. This is required if the"
 echo "installation will be accessible via the web, otherwise can be left blank."
+echo "Example: https://paperless.example.com"
 echo ""
 
 ask "URL" ""
@@ -112,18 +117,20 @@ echo ""
 echo "Paperless requires you to configure the current time zone correctly."
 echo "Otherwise, the dates of your documents may appear off by one day,"
 echo "depending on where you are on earth."
+echo "Example: Europe/Berlin"
+echo "See here for a list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones"
 echo ""
 
 ask "Current time zone" "$default_time_zone"
 TIME_ZONE=$ask_result
 
 echo ""
-echo "Database backend: PostgreSQL and SQLite are available. Use PostgreSQL"
+echo "Database backend: PostgreSQL, MariaDB, and SQLite are available. Use PostgreSQL"
 echo "if unsure. If you're running on a low-power device such as Raspberry"
 echo "Pi, use SQLite to save resources."
 echo ""
 
-ask "Database backend" "postgres" "postgres sqlite"
+ask "Database backend" "postgres" "postgres sqlite mariadb"
 DATABASE_BACKEND=$ask_result
 
 echo ""
@@ -214,9 +221,9 @@ echo ""
 ask_docker_folder "Data folder" ""
 DATA_FOLDER=$ask_result
 
-if [[ "$DATABASE_BACKEND" == "postgres" ]] ; then
+if [[ "$DATABASE_BACKEND" == "postgres" || "$DATABASE_BACKEND" == "mariadb" ]] ; then
 	echo ""
-	echo "The database folder, where postgres stores its data."
+	echo "The database folder, where your database stores its data."
 	echo "Leave empty to have this managed by docker."
 	echo ""
 	echo "CAUTION: If specified, you must specify an absolute path starting with /"
@@ -224,7 +231,7 @@ if [[ "$DATABASE_BACKEND" == "postgres" ]] ; then
 	echo ""
 
 	ask_docker_folder "Database folder" ""
-	POSTGRES_FOLDER=$ask_result
+	DATABASE_FOLDER=$ask_result
 fi
 
 echo ""
@@ -278,13 +285,14 @@ if [[ -z $DATA_FOLDER ]] ; then
 else
 	echo "Data folder: $DATA_FOLDER"
 fi
-if [[ "$DATABASE_BACKEND" == "postgres" ]] ; then
-	if [[ -z $POSTGRES_FOLDER ]] ; then
-		echo "Database (postgres) folder: Managed by docker"
+if [[ "$DATABASE_BACKEND" == "postgres" || "$DATABASE_BACKEND" == "mariadb" ]] ; then
+	if [[ -z $DATABASE_FOLDER ]] ; then
+		echo "Database folder: Managed by docker"
 	else
-		echo "Database (postgres) folder: $POSTGRES_FOLDER"
+		echo "Database folder: $DATABASE_FOLDER"
 	fi
 fi
+
 echo ""
 echo "URL: $URL"
 echo "Port: $PORT"
@@ -317,12 +325,18 @@ fi
 wget "https://raw.githubusercontent.com/paperless-ngx/paperless-ngx/main/docker/compose/docker-compose.$DOCKER_COMPOSE_VERSION.yml" -O docker-compose.yml
 wget "https://raw.githubusercontent.com/paperless-ngx/paperless-ngx/main/docker/compose/.env" -O .env
 
-SECRET_KEY=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | fold -w 64 | head -n 1)
+SECRET_KEY=$(LC_ALL=C tr -dc 'a-zA-Z0-9!#$%&()*+,-./:;<=>?@[\]^_`{|}~' < /dev/urandom | dd bs=1 count=64 2>/dev/null)
+
 
 DEFAULT_LANGUAGES=("deu eng fra ita spa")
 
-_split_langs="${OCR_LANGUAGE//+/ }"
-read -r -a OCR_LANGUAGES_ARRAY <<< "${_split_langs}"
+# OCR_LANG requires underscores, replace dashes if the user gave them with underscores
+readonly ocr_langs=${OCR_LANGUAGE//-/_}
+# OCR_LANGS (the install version) uses dashes, not underscores, so convert underscore to dash and plus to space
+install_langs=${OCR_LANGUAGE//_/-}    # First convert any underscores to dashes
+install_langs=${install_langs//+/ }    # Then convert plus signs to spaces
+
+read -r -a install_langs_array <<< "${install_langs}"
 
 {
 	if [[ ! $URL == "" ]] ; then
@@ -335,14 +349,14 @@ read -r -a OCR_LANGUAGES_ARRAY <<< "${_split_langs}"
 		echo "USERMAP_GID=$USERMAP_GID"
 	fi
 	echo "PAPERLESS_TIME_ZONE=$TIME_ZONE"
-	echo "PAPERLESS_OCR_LANGUAGE=$OCR_LANGUAGE"
-	echo "PAPERLESS_SECRET_KEY=$SECRET_KEY"
-	if [[ ! ${DEFAULT_LANGUAGES[*]} =~ ${OCR_LANGUAGES_ARRAY[*]} ]] ; then
-		echo "PAPERLESS_OCR_LANGUAGES=${OCR_LANGUAGES_ARRAY[*]}"
+	echo "PAPERLESS_OCR_LANGUAGE=$ocr_langs"
+	echo "PAPERLESS_SECRET_KEY='$SECRET_KEY'"
+	if [[ ! ${DEFAULT_LANGUAGES[*]} =~ ${install_langs_array[*]} ]] ; then
+		echo "PAPERLESS_OCR_LANGUAGES=${install_langs_array[*]}"
 	fi
 } > docker-compose.env
 
-sed -i "s/- 8000:8000/- $PORT:8000/g" docker-compose.yml
+sed -i "s/- \"8000:8000\"/- \"$PORT:8000\"/g" docker-compose.yml
 
 sed -i "s#- \./consume:/usr/src/paperless/consume#- $CONSUME_FOLDER:/usr/src/paperless/consume#g" docker-compose.yml
 
@@ -356,9 +370,16 @@ if [[ -n $DATA_FOLDER ]] ; then
 	sed -i "/^\s*data:/d" docker-compose.yml
 fi
 
-if [[ -n $POSTGRES_FOLDER ]] ; then
-	sed -i "s#- pgdata:/var/lib/postgresql/data#- $POSTGRES_FOLDER:/var/lib/postgresql/data#g" docker-compose.yml
-	sed -i "/^\s*pgdata:/d" docker-compose.yml
+# If the database folder was provided (not blank), replace the pgdata/dbdata volume with a bind mount
+# of the provided folder
+if [[ -n $DATABASE_FOLDER ]] ; then
+	if [[ "$DATABASE_BACKEND" == "postgres" ]] ; then
+		sed -i "s#- pgdata:/var/lib/postgresql/data#- $DATABASE_FOLDER:/var/lib/postgresql/data#g" docker-compose.yml
+		sed -i "/^\s*pgdata:/d" docker-compose.yml
+	elif [[ "$DATABASE_BACKEND" == "mariadb" ]]; then
+		sed -i "s#- dbdata:/var/lib/mysql#- $DATABASE_FOLDER:/var/lib/mysql#g" docker-compose.yml
+		sed -i "/^\s*dbdata:/d" docker-compose.yml
+	fi
 fi
 
 # remove trailing blank lines from end of file
@@ -371,8 +392,16 @@ if [ "$l1" -eq "$l2" ] ; then
 fi
 
 
-${DOCKER_COMPOSE_CMD} pull
+docker compose pull
 
-${DOCKER_COMPOSE_CMD} run --rm -e DJANGO_SUPERUSER_PASSWORD="$PASSWORD" webserver createsuperuser --noinput --username "$USERNAME" --email "$EMAIL"
+if [ "$DATABASE_BACKEND" == "postgres" ] || [ "$DATABASE_BACKEND" == "mariadb" ] ; then
+	echo "Starting DB first for initialization"
+	docker compose up --detach db
+	# hopefully enough time for even the slower systems
+	sleep 15
+	docker compose stop
+fi
 
-${DOCKER_COMPOSE_CMD} up -d
+docker compose run --rm -e DJANGO_SUPERUSER_PASSWORD="$PASSWORD" webserver createsuperuser --noinput --username "$USERNAME" --email "$EMAIL"
+
+docker compose up --detach

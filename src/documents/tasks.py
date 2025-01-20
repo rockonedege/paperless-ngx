@@ -1,38 +1,62 @@
+import hashlib
 import logging
-import os
 import shutil
-import tempfile
-from typing import List  # for type hinting. Can be removed, if only Python >3.8 is used
+import uuid
+from datetime import timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-import magic
 import tqdm
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
+from celery import Task
+from celery import shared_task
 from django.conf import settings
+from django.contrib.contenttypes.models import ContentType
+from django.db import models
+from django.db import transaction
 from django.db.models.signals import post_save
+from django.utils import timezone
+from filelock import FileLock
+from whoosh.writing import AsyncWriter
+
 from documents import index
 from documents import sanity_checker
+from documents.barcodes import BarcodePlugin
+from documents.caching import clear_document_caches
 from documents.classifier import DocumentClassifier
 from documents.classifier import load_classifier
-from documents.consumer import Consumer
-from documents.consumer import ConsumerError
+from documents.consumer import ConsumerPlugin
+from documents.consumer import WorkflowTriggerPlugin
+from documents.data_models import ConsumableDocument
+from documents.data_models import DocumentMetadataOverrides
+from documents.double_sided import CollatePlugin
+from documents.file_handling import create_source_path_directory
+from documents.file_handling import generate_unique_filename
 from documents.models import Correspondent
+from documents.models import CustomFieldInstance
 from documents.models import Document
 from documents.models import DocumentType
 from documents.models import StoragePath
 from documents.models import Tag
+from documents.models import Workflow
+from documents.models import WorkflowRun
+from documents.models import WorkflowTrigger
+from documents.parsers import DocumentParser
+from documents.parsers import get_parser_class_for_mime_type
+from documents.plugins.base import ConsumeTaskPlugin
+from documents.plugins.base import ProgressManager
+from documents.plugins.base import StopConsumeTaskError
+from documents.plugins.helpers import ProgressStatusOptions
 from documents.sanity_checker import SanityCheckFailedException
-from pdf2image import convert_from_path
-from pikepdf import Pdf
-from PIL import Image
-from PIL import ImageSequence
-from pyzbar import pyzbar
-from whoosh.writing import AsyncWriter
+from documents.signals import document_updated
+from documents.signals.handlers import cleanup_document_deletion
+from documents.signals.handlers import run_workflows
 
-
+if settings.AUDIT_LOG_ENABLED:
+    from auditlog.models import LogEntry
 logger = logging.getLogger("paperless.tasks")
 
 
+@shared_task
 def index_optimize():
     ix = index.open_index()
     writer = AsyncWriter(ix)
@@ -49,6 +73,7 @@ def index_reindex(progress_bar_disable=False):
             index.update_document(writer, document)
 
 
+@shared_task
 def train_classifier():
     if (
         not Tag.objects.filter(matching_algorithm=Tag.MATCH_AUTO).exists()
@@ -56,7 +81,12 @@ def train_classifier():
         and not Correspondent.objects.filter(matching_algorithm=Tag.MATCH_AUTO).exists()
         and not StoragePath.objects.filter(matching_algorithm=Tag.MATCH_AUTO).exists()
     ):
-
+        logger.info("No automatic matching items, not training")
+        # Special case, items were once auto and trained, so remove the model
+        # and prevent its use again
+        if settings.MODEL_FILE.exists():
+            logger.info(f"Removing {settings.MODEL_FILE} so it won't be used")
+            settings.MODEL_FILE.unlink()
         return
 
     classifier = load_classifier()
@@ -77,270 +107,83 @@ def train_classifier():
         logger.warning("Classifier error: " + str(e))
 
 
-def barcode_reader(image) -> List[str]:
-    """
-    Read any barcodes contained in image
-    Returns a list containing all found barcodes
-    """
-    barcodes = []
-    # Decode the barcode image
-    detected_barcodes = pyzbar.decode(image)
-
-    if detected_barcodes:
-        # Traverse through all the detected barcodes in image
-        for barcode in detected_barcodes:
-            if barcode.data:
-                decoded_barcode = barcode.data.decode("utf-8")
-                barcodes.append(decoded_barcode)
-                logger.debug(
-                    f"Barcode of type {str(barcode.type)} found: {decoded_barcode}",
-                )
-    return barcodes
-
-
-def get_file_type(path: str) -> str:
-    """
-    Determines the file type, based on MIME type.
-
-    Returns the MIME type.
-    """
-    mime_type = magic.from_file(path, mime=True)
-    logger.debug(f"Detected mime type: {mime_type}")
-    return mime_type
-
-
-def convert_from_tiff_to_pdf(filepath: str) -> str:
-    """
-    converts a given TIFF image file to pdf into a temporary directory.
-
-    Returns the new pdf file.
-    """
-    file_name = os.path.splitext(os.path.basename(filepath))[0]
-    mime_type = get_file_type(filepath)
-    tempdir = tempfile.mkdtemp(prefix="paperless-", dir=settings.SCRATCH_DIR)
-    # use old file name with pdf extension
-    if mime_type == "image/tiff":
-        newpath = os.path.join(tempdir, file_name + ".pdf")
-    else:
-        logger.warning(
-            f"Cannot convert mime type {str(mime_type)} from {str(filepath)} to pdf.",
-        )
-        return None
-    with Image.open(filepath) as image:
-        images = []
-        for i, page in enumerate(ImageSequence.Iterator(image)):
-            page = page.convert("RGB")
-            images.append(page)
-        try:
-            if len(images) == 1:
-                images[0].save(newpath)
-            else:
-                images[0].save(newpath, save_all=True, append_images=images[1:])
-        except OSError as e:
-            logger.warning(
-                f"Could not save the file as pdf. Error: {str(e)}",
-            )
-            return None
-    return newpath
-
-
-def scan_file_for_separating_barcodes(filepath: str) -> List[int]:
-    """
-    Scan the provided pdf file for page separating barcodes
-    Returns a list of pagenumbers, which separate the file
-    """
-    separator_page_numbers = []
-    separator_barcode = str(settings.CONSUMER_BARCODE_STRING)
-    # use a temporary directory in case the file os too big to handle in memory
-    with tempfile.TemporaryDirectory() as path:
-        pages_from_path = convert_from_path(filepath, output_folder=path)
-        for current_page_number, page in enumerate(pages_from_path):
-            current_barcodes = barcode_reader(page)
-            if separator_barcode in current_barcodes:
-                separator_page_numbers.append(current_page_number)
-    return separator_page_numbers
-
-
-def separate_pages(filepath: str, pages_to_split_on: List[int]) -> List[str]:
-    """
-    Separate the provided pdf file on the pages_to_split_on.
-    The pages which are defined by page_numbers will be removed.
-    Returns a list of (temporary) filepaths to consume.
-    These will need to be deleted later.
-    """
-    os.makedirs(settings.SCRATCH_DIR, exist_ok=True)
-    tempdir = tempfile.mkdtemp(prefix="paperless-", dir=settings.SCRATCH_DIR)
-    fname = os.path.splitext(os.path.basename(filepath))[0]
-    pdf = Pdf.open(filepath)
-    document_paths = []
-    logger.debug(f"Temp dir is {str(tempdir)}")
-    if not pages_to_split_on:
-        logger.warning("No pages to split on!")
-    else:
-        # go from the first page to the first separator page
-        dst = Pdf.new()
-        for n, page in enumerate(pdf.pages):
-            if n < pages_to_split_on[0]:
-                dst.pages.append(page)
-        output_filename = f"{fname}_document_0.pdf"
-        savepath = os.path.join(tempdir, output_filename)
-        with open(savepath, "wb") as out:
-            dst.save(out)
-        document_paths = [savepath]
-
-        # iterate through the rest of the document
-        for count, page_number in enumerate(pages_to_split_on):
-            logger.debug(f"Count: {str(count)} page_number: {str(page_number)}")
-            dst = Pdf.new()
-            try:
-                next_page = pages_to_split_on[count + 1]
-            except IndexError:
-                next_page = len(pdf.pages)
-            # skip the first page_number. This contains the barcode page
-            for page in range(page_number + 1, next_page):
-                logger.debug(
-                    f"page_number: {str(page_number)} next_page: {str(next_page)}",
-                )
-                dst.pages.append(pdf.pages[page])
-            output_filename = f"{fname}_document_{str(count + 1)}.pdf"
-            logger.debug(f"pdf no:{str(count)} has {str(len(dst.pages))} pages")
-            savepath = os.path.join(tempdir, output_filename)
-            with open(savepath, "wb") as out:
-                dst.save(out)
-            document_paths.append(savepath)
-    logger.debug(f"Temp files are {str(document_paths)}")
-    return document_paths
-
-
-def save_to_dir(
-    filepath: str,
-    newname: str = None,
-    target_dir: str = settings.CONSUMPTION_DIR,
-):
-    """
-    Copies filepath to target_dir.
-    Optionally rename the file.
-    """
-    if os.path.isfile(filepath) and os.path.isdir(target_dir):
-        dst = shutil.copy(filepath, target_dir)
-        logging.debug(f"saved {str(filepath)} to {str(dst)}")
-        if newname:
-            dst_new = os.path.join(target_dir, newname)
-            logger.debug(f"moving {str(dst)} to {str(dst_new)}")
-            os.rename(dst, dst_new)
-    else:
-        logger.warning(f"{str(filepath)} or {str(target_dir)} don't exist.")
-
-
+@shared_task(bind=True)
 def consume_file(
-    path,
-    override_filename=None,
-    override_title=None,
-    override_correspondent_id=None,
-    override_document_type_id=None,
-    override_tag_ids=None,
-    task_id=None,
-    override_created=None,
+    self: Task,
+    input_doc: ConsumableDocument,
+    overrides: DocumentMetadataOverrides | None = None,
 ):
+    # Default no overrides
+    if overrides is None:
+        overrides = DocumentMetadataOverrides()
 
-    # check for separators in current document
-    if settings.CONSUMER_ENABLE_BARCODES:
-        separators = []
-        document_list = []
-        converted_tiff = None
-        if settings.CONSUMER_BARCODE_TIFF_SUPPORT:
-            supported_mime = ["image/tiff", "application/pdf"]
-        else:
-            supported_mime = ["application/pdf"]
-        mime_type = get_file_type(path)
-        if mime_type not in supported_mime:
-            # if not supported, skip this routine
-            logger.warning(
-                f"Unsupported file format for barcode reader: {str(mime_type)}",
+    plugins: list[type[ConsumeTaskPlugin]] = [
+        CollatePlugin,
+        BarcodePlugin,
+        WorkflowTriggerPlugin,
+        ConsumerPlugin,
+    ]
+
+    with (
+        ProgressManager(
+            overrides.filename or input_doc.original_file.name,
+            self.request.id,
+        ) as status_mgr,
+        TemporaryDirectory(dir=settings.SCRATCH_DIR) as tmp_dir,
+    ):
+        tmp_dir = Path(tmp_dir)
+        for plugin_class in plugins:
+            plugin_name = plugin_class.NAME
+
+            plugin = plugin_class(
+                input_doc,
+                overrides,
+                status_mgr,
+                tmp_dir,
+                self.request.id,
             )
-        else:
-            if mime_type == "image/tiff":
-                file_to_process = convert_from_tiff_to_pdf(path)
-            else:
-                file_to_process = path
 
-            separators = scan_file_for_separating_barcodes(file_to_process)
+            if not plugin.able_to_run:
+                logger.debug(f"Skipping plugin {plugin_name}")
+                continue
 
-            if separators:
-                logger.debug(
-                    f"Pages with separators found in: {str(path)}",
-                )
-                document_list = separate_pages(file_to_process, separators)
+            try:
+                logger.debug(f"Executing plugin {plugin_name}")
+                plugin.setup()
 
-            if document_list:
-                for n, document in enumerate(document_list):
-                    # save to consumption dir
-                    # rename it to the original filename  with number prefix
-                    if override_filename:
-                        newname = f"{str(n)}_" + override_filename
-                    else:
-                        newname = None
-                    save_to_dir(document, newname=newname)
-                # if we got here, the document was successfully split
-                # and can safely be deleted
-                if converted_tiff:
-                    logger.debug(f"Deleting file {file_to_process}")
-                    os.unlink(file_to_process)
-                logger.debug(f"Deleting file {path}")
-                os.unlink(path)
-                # notify the sender, otherwise the progress bar
-                # in the UI stays stuck
-                payload = {
-                    "filename": override_filename,
-                    "task_id": task_id,
-                    "current_progress": 100,
-                    "max_progress": 100,
-                    "status": "SUCCESS",
-                    "message": "finished",
-                }
-                try:
-                    async_to_sync(get_channel_layer().group_send)(
-                        "status_updates",
-                        {"type": "status_update", "data": payload},
-                    )
-                except OSError as e:
-                    logger.warning(
-                        "OSError. It could be, the broker cannot be reached.",
-                    )
-                    logger.warning(str(e))
-                # consuming stops here, since the original document with
-                # the barcodes has been split and will be consumed separately
-                return "File successfully split"
+                msg = plugin.run()
 
-    # continue with consumption if no barcode was found
-    document = Consumer().try_consume_file(
-        path,
-        override_filename=override_filename,
-        override_title=override_title,
-        override_correspondent_id=override_correspondent_id,
-        override_document_type_id=override_document_type_id,
-        override_tag_ids=override_tag_ids,
-        task_id=task_id,
-        override_created=override_created,
-    )
+                if msg is not None:
+                    logger.info(f"{plugin_name} completed with: {msg}")
+                else:
+                    logger.info(f"{plugin_name} completed with no message")
 
-    if document:
-        return f"Success. New document id {document.pk} created"
-    else:
-        raise ConsumerError(
-            "Unknown error: Returned document was null, but "
-            "no error message was given.",
-        )
+                overrides = plugin.metadata
+
+            except StopConsumeTaskError as e:
+                logger.info(f"{plugin_name} requested task exit: {e.message}")
+                return e.message
+
+            except Exception as e:
+                logger.exception(f"{plugin_name} failed: {e}")
+                status_mgr.send_progress(ProgressStatusOptions.FAILED, f"{e}", 100, 100)
+                raise
+
+            finally:
+                plugin.cleanup()
+
+    return msg
 
 
+@shared_task
 def sanity_check():
     messages = sanity_checker.check_sanity()
 
     messages.log_messages()
 
-    if messages.has_error():
+    if messages.has_error:
         raise SanityCheckFailedException("Sanity check failed with errors. See log.")
-    elif messages.has_warning():
+    elif messages.has_warning:
         return "Sanity check exited with warnings. See log."
     elif len(messages) > 0:
         return "Sanity check exited with infos. See log."
@@ -348,14 +191,248 @@ def sanity_check():
         return "No issues detected."
 
 
+@shared_task
 def bulk_update_documents(document_ids):
     documents = Document.objects.filter(id__in=document_ids)
 
     ix = index.open_index()
 
     for doc in documents:
+        clear_document_caches(doc.pk)
+        document_updated.send(
+            sender=None,
+            document=doc,
+            logging_group=uuid.uuid4(),
+        )
         post_save.send(Document, instance=doc, created=False)
 
     with AsyncWriter(ix) as writer:
         for doc in documents:
             index.update_document(writer, doc)
+
+
+@shared_task
+def update_document_content_maybe_archive_file(document_id):
+    """
+    Re-creates OCR content and thumbnail for a document, and archive file if
+    it exists.
+    """
+    document = Document.objects.get(id=document_id)
+
+    mime_type = document.mime_type
+
+    parser_class: type[DocumentParser] = get_parser_class_for_mime_type(mime_type)
+
+    if not parser_class:
+        logger.error(
+            f"No parser found for mime type {mime_type}, cannot "
+            f"archive document {document} (ID: {document_id})",
+        )
+        return
+
+    parser: DocumentParser = parser_class(logging_group=uuid.uuid4())
+
+    try:
+        parser.parse(document.source_path, mime_type, document.get_public_filename())
+
+        thumbnail = parser.get_thumbnail(
+            document.source_path,
+            mime_type,
+            document.get_public_filename(),
+        )
+
+        with transaction.atomic():
+            oldDocument = Document.objects.get(pk=document.pk)
+            if parser.get_archive_path():
+                with open(parser.get_archive_path(), "rb") as f:
+                    checksum = hashlib.md5(f.read()).hexdigest()
+                # I'm going to save first so that in case the file move
+                # fails, the database is rolled back.
+                # We also don't use save() since that triggers the filehandling
+                # logic, and we don't want that yet (file not yet in place)
+                document.archive_filename = generate_unique_filename(
+                    document,
+                    archive_filename=True,
+                )
+                Document.objects.filter(pk=document.pk).update(
+                    archive_checksum=checksum,
+                    content=parser.get_text(),
+                    archive_filename=document.archive_filename,
+                )
+                newDocument = Document.objects.get(pk=document.pk)
+                if settings.AUDIT_LOG_ENABLED:
+                    LogEntry.objects.log_create(
+                        instance=oldDocument,
+                        changes={
+                            "content": [oldDocument.content, newDocument.content],
+                            "archive_checksum": [
+                                oldDocument.archive_checksum,
+                                newDocument.archive_checksum,
+                            ],
+                            "archive_filename": [
+                                oldDocument.archive_filename,
+                                newDocument.archive_filename,
+                            ],
+                        },
+                        additional_data={
+                            "reason": "Update document content",
+                        },
+                        action=LogEntry.Action.UPDATE,
+                    )
+            else:
+                Document.objects.filter(pk=document.pk).update(
+                    content=parser.get_text(),
+                )
+
+                if settings.AUDIT_LOG_ENABLED:
+                    LogEntry.objects.log_create(
+                        instance=oldDocument,
+                        changes={
+                            "content": [oldDocument.content, parser.get_text()],
+                        },
+                        additional_data={
+                            "reason": "Update document content",
+                        },
+                        action=LogEntry.Action.UPDATE,
+                    )
+
+            with FileLock(settings.MEDIA_LOCK):
+                if parser.get_archive_path():
+                    create_source_path_directory(document.archive_path)
+                    shutil.move(parser.get_archive_path(), document.archive_path)
+                shutil.move(thumbnail, document.thumbnail_path)
+
+        document.refresh_from_db()
+        logger.info(
+            f"Updating index for document {document_id} ({document.archive_checksum})",
+        )
+        with index.open_index_writer() as writer:
+            index.update_document(writer, document)
+
+        clear_document_caches(document.pk)
+
+    except Exception:
+        logger.exception(
+            f"Error while parsing document {document} (ID: {document_id})",
+        )
+    finally:
+        parser.cleanup()
+
+
+@shared_task
+def empty_trash(doc_ids=None):
+    if doc_ids is None:
+        logger.info("Emptying trash of all expired documents")
+    documents = (
+        Document.deleted_objects.filter(id__in=doc_ids)
+        if doc_ids is not None
+        else Document.deleted_objects.filter(
+            deleted_at__lt=timezone.localtime(timezone.now())
+            - timedelta(
+                days=settings.EMPTY_TRASH_DELAY,
+            ),
+        )
+    )
+
+    try:
+        deleted_document_ids = documents.values_list("id", flat=True)
+        # Temporarily connect the cleanup handler
+        models.signals.post_delete.connect(cleanup_document_deletion, sender=Document)
+        documents.delete()  # this is effectively a hard delete
+        logger.info(f"Deleted {len(deleted_document_ids)} documents from trash")
+
+        if settings.AUDIT_LOG_ENABLED:
+            # Delete the audit log entries for documents that dont exist anymore
+            LogEntry.objects.filter(
+                content_type=ContentType.objects.get_for_model(Document),
+                object_id__in=deleted_document_ids,
+            ).delete()
+    except Exception as e:  # pragma: no cover
+        logger.exception(f"Error while emptying trash: {e}")
+    finally:
+        models.signals.post_delete.disconnect(
+            cleanup_document_deletion,
+            sender=Document,
+        )
+
+
+@shared_task
+def check_scheduled_workflows():
+    scheduled_workflows: list[Workflow] = (
+        Workflow.objects.filter(
+            triggers__type=WorkflowTrigger.WorkflowTriggerType.SCHEDULED,
+            enabled=True,
+        )
+        .distinct()
+        .prefetch_related("triggers")
+    )
+    if scheduled_workflows.count() > 0:
+        logger.debug(f"Checking {len(scheduled_workflows)} scheduled workflows")
+        for workflow in scheduled_workflows:
+            schedule_triggers = workflow.triggers.filter(
+                type=WorkflowTrigger.WorkflowTriggerType.SCHEDULED,
+            )
+            trigger: WorkflowTrigger
+            for trigger in schedule_triggers:
+                documents = Document.objects.none()
+                offset_td = timedelta(days=trigger.schedule_offset_days)
+                logger.debug(
+                    f"Checking trigger {trigger} with offset {offset_td} against field: {trigger.schedule_date_field}",
+                )
+                match trigger.schedule_date_field:
+                    case WorkflowTrigger.ScheduleDateField.ADDED:
+                        documents = Document.objects.filter(
+                            added__lt=timezone.now() - offset_td,
+                        )
+                    case WorkflowTrigger.ScheduleDateField.CREATED:
+                        documents = Document.objects.filter(
+                            created__lt=timezone.now() - offset_td,
+                        )
+                    case WorkflowTrigger.ScheduleDateField.MODIFIED:
+                        documents = Document.objects.filter(
+                            modified__lt=timezone.now() - offset_td,
+                        )
+                    case WorkflowTrigger.ScheduleDateField.CUSTOM_FIELD:
+                        cf_instances = CustomFieldInstance.objects.filter(
+                            field=trigger.schedule_date_custom_field,
+                            value_date__lt=timezone.now() - offset_td,
+                        )
+                        documents = Document.objects.filter(
+                            id__in=cf_instances.values_list("document", flat=True),
+                        )
+                if documents.count() > 0:
+                    logger.debug(
+                        f"Found {documents.count()} documents for trigger {trigger}",
+                    )
+                    for document in documents:
+                        workflow_runs = WorkflowRun.objects.filter(
+                            document=document,
+                            type=WorkflowTrigger.WorkflowTriggerType.SCHEDULED,
+                            workflow=workflow,
+                        ).order_by("-run_at")
+                        if not trigger.schedule_is_recurring and workflow_runs.exists():
+                            # schedule is non-recurring and the workflow has already been run
+                            logger.debug(
+                                f"Skipping document {document} for non-recurring workflow {workflow} as it has already been run",
+                            )
+                            continue
+                        elif (
+                            trigger.schedule_is_recurring
+                            and workflow_runs.exists()
+                            and (
+                                workflow_runs.last().run_at
+                                > timezone.now()
+                                - timedelta(
+                                    days=trigger.schedule_recurring_interval_days,
+                                )
+                            )
+                        ):
+                            # schedule is recurring but the last run was within the number of recurring interval days
+                            logger.debug(
+                                f"Skipping document {document} for recurring workflow {workflow} as the last run was within the recurring interval",
+                            )
+                            continue
+                        run_workflows(
+                            WorkflowTrigger.WorkflowTriggerType.SCHEDULED,
+                            document,
+                        )

@@ -1,5 +1,5 @@
 def get_parser(*args, **kwargs):
-    from .parsers import RasterisedDocumentParser
+    from paperless_tesseract.parsers import RasterisedDocumentParser
 
     return RasterisedDocumentParser(*args, **kwargs)
 
@@ -15,5 +15,6 @@ def tesseract_consumer_declaration(sender, **kwargs):
             "image/tiff": ".tif",
             "image/gif": ".gif",
             "image/bmp": ".bmp",
+            "image/webp": ".webp",
         },
     }

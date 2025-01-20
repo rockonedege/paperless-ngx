@@ -1,17 +1,26 @@
+import { DecimalPipe } from '@angular/common'
 import { Component, EventEmitter, Input, Output } from '@angular/core'
 import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap'
-import { interval, Subject, switchMap, take } from 'rxjs'
+import { Subject } from 'rxjs'
+import { SafeHtmlPipe } from 'src/app/pipes/safehtml.pipe'
+import { LoadingComponentWithPermissions } from '../../loading-component/loading.component'
 
 @Component({
-  selector: 'app-confirm-dialog',
+  selector: 'pngx-confirm-dialog',
   templateUrl: './confirm-dialog.component.html',
   styleUrls: ['./confirm-dialog.component.scss'],
+  imports: [DecimalPipe, SafeHtmlPipe],
 })
-export class ConfirmDialogComponent {
-  constructor(public activeModal: NgbActiveModal) {}
+export class ConfirmDialogComponent extends LoadingComponentWithPermissions {
+  constructor(public activeModal: NgbActiveModal) {
+    super()
+  }
 
   @Output()
   public confirmClicked = new EventEmitter()
+
+  @Output()
+  public alternativeClicked = new EventEmitter()
 
   @Input()
   title = $localize`Confirmation`
@@ -29,33 +38,27 @@ export class ConfirmDialogComponent {
   btnCaption = $localize`Confirm`
 
   @Input()
+  alternativeBtnClass = 'btn-secondary'
+
+  @Input()
+  alternativeBtnCaption
+
+  @Input()
+  cancelBtnClass = 'btn-outline-secondary'
+
+  @Input()
+  cancelBtnCaption = $localize`Cancel`
+
+  @Input()
   buttonsEnabled = true
 
   confirmButtonEnabled = true
+  alternativeButtonEnabled = true
   seconds = 0
   secondsTotal = 0
 
   confirmSubject: Subject<boolean>
-
-  delayConfirm(seconds: number) {
-    const refreshInterval = 0.15 // s
-
-    this.secondsTotal = seconds
-    this.seconds = seconds
-
-    interval(refreshInterval * 1000)
-      .pipe(
-        take(this.secondsTotal / refreshInterval + 2) // need 2 more for animation to complete after 0
-      )
-      .subscribe((count) => {
-        this.seconds = Math.max(
-          0,
-          this.secondsTotal - refreshInterval * (count + 1)
-        )
-        this.confirmButtonEnabled =
-          this.secondsTotal - refreshInterval * count < 0
-      })
-  }
+  alternativeSubject: Subject<boolean>
 
   cancel() {
     this.confirmSubject?.next(false)
@@ -67,5 +70,11 @@ export class ConfirmDialogComponent {
     this.confirmClicked.emit()
     this.confirmSubject?.next(true)
     this.confirmSubject?.complete()
+  }
+
+  alternative() {
+    this.alternativeClicked.emit()
+    this.alternativeSubject?.next(true)
+    this.alternativeSubject?.complete()
   }
 }
